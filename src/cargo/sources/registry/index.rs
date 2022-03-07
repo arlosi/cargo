@@ -638,9 +638,6 @@ impl Summaries {
             return Poll::Pending;
         }
 
-        // We ignore lookup failures as those are just crates which don't exist
-        // or we haven't updated the registry yet. If we actually ran the
-        // closure though then we care about those errors.
         if !hit_closure {
             debug_assert!(cache_contents.is_none());
             return Poll::Ready(Ok(None));

@@ -449,7 +449,7 @@ pub trait RegistryData {
 
     /// Ensures the index is updated with the latest data.
     ///
-    /// Invalidates cached data.
+    /// Invalidates locally cached data.
     fn invalidate_cache(&mut self);
 
     /// Is the local cached data up-to-date?

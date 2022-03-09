@@ -133,15 +133,14 @@ pub fn resolve(
         Some(config) => config.cli_unstable().minimal_versions,
         None => false,
     };
-    let mut registry =
-        RegistryQueryer::new(registry, replacements, version_prefs, minimal_versions);
+    let mut querier = RegistryQueryer::new(registry, replacements, version_prefs, minimal_versions);
     let cx = loop {
         let cx = Context::new(check_public_visible_dependencies);
-        let cx = activate_deps_loop(cx, &mut registry, summaries, config)?;
-        if registry.reset_pending() {
+        let cx = activate_deps_loop(cx, &mut querier, summaries, config)?;
+        if querier.reset_pending() {
             break cx;
         } else {
-            registry.registry.block_until_ready()?;
+            querier.registry.block_until_ready()?;
         }
     };
 
@@ -151,7 +150,7 @@ pub fn resolve(
         cksums.insert(summary.package_id(), cksum);
     }
     let graph = cx.graph();
-    let replacements = cx.resolve_replacements(&registry);
+    let replacements = cx.resolve_replacements(&querier);
     let features = cx
         .resolve_features
         .iter()

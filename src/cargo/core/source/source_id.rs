@@ -251,6 +251,11 @@ impl SourceId {
         }
     }
 
+    /// Gets the name of the registry as defined in the config.
+    pub fn cfg_name(&self) -> Option<&str> {
+        self.inner.name.as_deref()
+    }
+
     /// Returns `true` if this source is from a filesystem path.
     pub fn is_path(self) -> bool {
         self.inner.kind == SourceKind::Path
@@ -666,7 +671,13 @@ impl<'a> fmt::Display for SourceIdAsUrl<'a> {
                 kind: SourceKind::Registry,
                 ref url,
                 ..
-            } => write!(f, "registry+{}", url),
+            } => {
+                if url.scheme().starts_with("sparse+") {
+                    write!(f, "{}", url)
+                } else {
+                    write!(f, "registry+{}", url)
+                }
+            }
             SourceIdInner {
                 kind: SourceKind::LocalRegistry,
                 ref url,

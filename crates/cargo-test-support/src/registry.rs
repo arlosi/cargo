@@ -85,6 +85,10 @@ pub struct RegistryBuilder {
     alt_api_url: Option<String>,
     /// If `true`, configures `.cargo/credentials` with some tokens.
     add_tokens: bool,
+    /// If set, the registry requires authorization for all operations.
+    auth_required: bool,
+    /// If set, the Url of the http server that serves the registry.
+    http: Option<Url>,
 }
 
 impl RegistryBuilder {
@@ -94,6 +98,8 @@ impl RegistryBuilder {
             alternative: false,
             alt_api_url: None,
             add_tokens: true,
+            auth_required: false,
+            http: None,
         }
     }
 
@@ -126,6 +132,19 @@ impl RegistryBuilder {
         self
     }
 
+    /// Sets this registry to require the authentication token for
+    /// all operations.
+    pub fn auth_required(&mut self) -> &mut Self {
+        self.auth_required = true;
+        self
+    }
+
+    /// Sets the http url
+    pub fn http(&mut self, http: Url) -> &mut Self {
+        self.http = Some(http);
+        self
+    }
+
     /// Initializes the registries.
     pub fn build(&self) {
         let config_path = paths::home().join(".cargo/config");
@@ -153,13 +172,18 @@ impl RegistryBuilder {
             .unwrap();
         }
         if self.alternative {
+            let url = if let Some(http) = &self.http {
+                http.clone()
+            } else {
+                alt_registry_url()
+            };
             write!(
                 config,
                 "
                     [registries.alternative]
                     index = '{}'
                 ",
-                alt_registry_url()
+                url
             )
             .unwrap();
         }
@@ -180,7 +204,13 @@ impl RegistryBuilder {
         }
 
         if self.replace_crates_io {
-            init_registry(registry_path(), dl_url().into(), api_url(), api_path());
+            init_registry(
+                registry_path(),
+                dl_url().into(),
+                api_url(),
+                api_path(),
+                self.auth_required,
+            );
         }
 
         if self.alternative {
@@ -191,6 +221,7 @@ impl RegistryBuilder {
                     .as_ref()
                     .map_or_else(alt_api_url, |url| Url::parse(url).expect("valid url")),
                 alt_api_path(),
+                self.auth_required,
             );
         }
     }
@@ -377,8 +408,8 @@ pub struct RegistryServer {
 }
 
 impl RegistryServer {
-    pub fn addr(&self) -> SocketAddr {
-        self.addr
+    pub fn url(&self) -> Url {
+        Url::parse(&format!("sparse+http://{}/", self.addr.to_string())).unwrap()
     }
 }
 
@@ -391,7 +422,7 @@ impl Drop for RegistryServer {
 }
 
 #[must_use]
-pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
+pub fn serve_registry(registry_path: PathBuf, token: Option<String>) -> RegistryServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let done = Arc::new(AtomicBool::new(false));
@@ -422,36 +453,51 @@ pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
             );
 
             let file = registry_path.join(path);
-            if file.exists() {
-                // Grab some other headers we may care about.
-                let mut if_modified_since = None;
-                let mut if_none_match = None;
-                loop {
-                    line.clear();
-                    if buf.read_line(&mut line).unwrap() == 0 {
-                        continue 'server;
-                    }
-
-                    if line == "\r\n" {
-                        // End of headers.
-                        line.clear();
-                        break;
-                    }
-
-                    let value = line
-                        .splitn(2, ':')
-                        .skip(1)
-                        .next()
-                        .map(|v| v.trim())
-                        .unwrap();
-
-                    if line.starts_with("If-Modified-Since:") {
-                        if_modified_since = Some(value.to_owned());
-                    } else if line.starts_with("If-None-Match:") {
-                        if_none_match = Some(value.trim_matches('"').to_owned());
-                    }
+            // Grab some other headers we may care about.
+            let mut if_modified_since = None;
+            let mut if_none_match = None;
+            let mut authorization = None;
+            loop {
+                line.clear();
+                if buf.read_line(&mut line).unwrap() == 0 {
+                    continue 'server;
                 }
 
+                if line == "\r\n" {
+                    // End of headers.
+                    line.clear();
+                    break;
+                }
+
+                let (name, value) = line.split_once(':').unwrap();
+                let name = name.trim().to_ascii_lowercase();
+                let value = value.trim().to_string();
+
+                match name.as_str() {
+                    "if-modified-since" => if_modified_since = Some(value),
+                    "if-none-match" => if_none_match = Some(value),
+                    "authorization" => authorization = Some(value),
+                    _ => {}
+                }
+            }
+
+            if token.is_some() && token != authorization {
+                buf.get_mut()
+                    .write_all(b"HTTP/1.1 401 Unauthorized\r\n")
+                    .unwrap();
+                buf.get_mut()
+                    .write_all(
+                        b"WWW-Authenticate: Cargo login_url=https://test-registry-login/me\r\n\r\n",
+                    )
+                    .unwrap();
+                buf.get_mut()
+                    .write_all(b"Unauthorized message from server.")
+                    .unwrap();
+            } else if !file.exists() {
+                buf.get_mut()
+                    .write_all(b"HTTP/1.1 404 Not Found\r\n\r\n")
+                    .unwrap();
+            } else {
                 // Now grab info about the file.
                 let data = fs::read(&file).unwrap();
                 let etag = Sha256::new().update(&data).finish_hex();
@@ -479,45 +525,29 @@ pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
                 // Write out the main response line.
                 if any_match && all_match {
                     buf.get_mut()
-                        .write_all(b"HTTP/1.1 304 Not Modified\r\n")
+                        .write_all(b"HTTP/1.1 304 Not Modified\r\n\r\n")
                         .unwrap();
                 } else {
                     buf.get_mut().write_all(b"HTTP/1.1 200 OK\r\n").unwrap();
+
+                    // TODO: Support 451 for crate index deletions.
+                    // Write out other headers.
+                    buf.get_mut()
+                        .write_all(format!("Content-Length: {}\r\n", data.len()).as_bytes())
+                        .unwrap();
+                    buf.get_mut()
+                        .write_all(format!("ETag: \"{}\"\r\n", etag).as_bytes())
+                        .unwrap();
+                    buf.get_mut()
+                        .write_all(format!("Last-Modified: {}\r\n", last_modified).as_bytes())
+                        .unwrap();
+
+                    // And finally, write out the body.
+                    buf.get_mut().write_all(b"\r\n").unwrap();
+                    buf.get_mut().write_all(&data).unwrap();
                 }
-                // TODO: Support 451 for crate index deletions.
-
-                // Write out other headers.
-                buf.get_mut()
-                    .write_all(format!("Content-Length: {}\r\n", data.len()).as_bytes())
-                    .unwrap();
-                buf.get_mut()
-                    .write_all(format!("ETag: \"{}\"\r\n", etag).as_bytes())
-                    .unwrap();
-                buf.get_mut()
-                    .write_all(format!("Last-Modified: {}\r\n", last_modified).as_bytes())
-                    .unwrap();
-
-                // And finally, write out the body.
-                buf.get_mut().write_all(b"\r\n").unwrap();
-                buf.get_mut().write_all(&data).unwrap();
-            } else {
-                loop {
-                    line.clear();
-                    if buf.read_line(&mut line).unwrap() == 0 {
-                        // Connection terminated.
-                        continue 'server;
-                    }
-
-                    if line == "\r\n" {
-                        break;
-                    }
-                }
-
-                buf.get_mut()
-                    .write_all(b"HTTP/1.1 404 Not Found\r\n\r\n")
-                    .unwrap();
-                buf.get_mut().write_all(b"\r\n").unwrap();
             }
+
             buf.get_mut().flush().unwrap();
         }
     });
@@ -530,12 +560,23 @@ pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
 }
 
 /// Creates a new on-disk registry.
-pub fn init_registry(registry_path: PathBuf, dl_url: String, api_url: Url, api_path: PathBuf) {
+pub fn init_registry(
+    registry_path: PathBuf,
+    dl_url: String,
+    api_url: Url,
+    api_path: PathBuf,
+    auth_required: bool,
+) {
+    let auth = if auth_required {
+        ", \"auth-required\":true"
+    } else {
+        ""
+    };
     // Initialize a new registry.
     repo(&registry_path)
         .file(
             "config.json",
-            &format!(r#"{{"dl":"{}","api":"{}"}}"#, dl_url, api_url),
+            &format!(r#"{{"dl":"{}","api":"{}"{}}}"#, dl_url, api_url, auth),
         )
         .build();
     fs::create_dir_all(api_path.join("api/v1/crates")).unwrap();

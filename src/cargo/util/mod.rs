@@ -28,6 +28,7 @@ pub use self::workspace::{
     print_available_examples, print_available_packages, print_available_tests,
 };
 
+pub mod auth;
 mod canonical_url;
 pub mod command_prelude;
 pub mod config;
@@ -106,4 +107,16 @@ pub fn indented_lines(text: &str) -> String {
             }
         })
         .collect()
+}
+
+pub fn truncate_with_ellipsis(s: &str, max_length: usize) -> String {
+    // We should truncate at grapheme-boundary and compute character-widths,
+    // yet the dependencies on unicode-segmentation and unicode-width are
+    // not worth it.
+    let mut chars = s.chars();
+    let mut prefix = (&mut chars).take(max_length - 1).collect::<String>();
+    if chars.next().is_some() {
+        prefix.push('…');
+    }
+    prefix
 }

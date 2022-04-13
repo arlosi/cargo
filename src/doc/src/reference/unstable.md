@@ -1066,8 +1066,8 @@ interactions are:
 The following environment variables will be provided to the executed command:
 
 * `CARGO` — Path to the `cargo` binary executing the command.
-* `CARGO_REGISTRY_NAME` — Name of the registry the authentication token is for.
-* `CARGO_REGISTRY_API_URL` — The URL of the registry API.
+* `CARGO_REGISTRY_NAME_OPT` — Optional name of the registry. Should not be used as a storage key. Not always available.
+* `CARGO_REGISTRY_INDEX_URL` — The URL of the registry index.
 
 #### `cargo logout`
 

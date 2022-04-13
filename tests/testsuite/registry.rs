@@ -10,9 +10,8 @@ use cargo_test_support::{cargo_process, registry::registry_url};
 use cargo_test_support::{git, install::cargo_home, t};
 use cargo_util::paths::remove_dir_all;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::Stdio;
+use url::Url;
 
 fn cargo_http(p: &Project, s: &str) -> Execs {
     let mut e = p.cargo(s);
@@ -25,12 +24,12 @@ fn cargo_stable(p: &Project, s: &str) -> Execs {
 }
 
 fn setup_http() -> RegistryServer {
-    let server = serve_registry(registry_path());
-    configure_source_replacement_for_http(&server.addr().to_string());
+    let server = serve_registry(registry_path(), None);
+    configure_source_replacement_for_http(&server.url());
     server
 }
 
-fn configure_source_replacement_for_http(addr: &str) {
+fn configure_source_replacement_for_http(url: &Url) {
     let root = paths::root();
     t!(fs::create_dir(&root.join(".cargo")));
     t!(fs::write(
@@ -41,9 +40,9 @@ fn configure_source_replacement_for_http(addr: &str) {
             replace-with = 'dummy-registry'
 
             [source.dummy-registry]
-            registry = 'sparse+http://{}'
+            registry = '{}'
         ",
-            addr
+            url.as_str()
         )
     ));
 }
@@ -1117,26 +1116,10 @@ fn login_with_token_on_stdin() {
     let credentials = paths::home().join(".cargo/credentials");
     fs::remove_file(&credentials).unwrap();
     cargo_process("login lmao -v").run();
-    let mut cargo = cargo_process("login").build_command();
-    cargo
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cargo.spawn().unwrap();
-    let out = BufReader::new(child.stdout.as_mut().unwrap())
-        .lines()
-        .next()
-        .unwrap()
-        .unwrap();
-    assert!(out.starts_with("please paste the API Token found on "));
-    assert!(out.ends_with("/me below"));
-    child
-        .stdin
-        .as_ref()
-        .unwrap()
-        .write_all(b"some token\n")
-        .unwrap();
-    child.wait().unwrap();
+    cargo_process("login")
+        .with_stdout("please paste the token found on [..]/me below")
+        .with_stdin("some token")
+        .run();
     let credentials = fs::read_to_string(&credentials).unwrap();
     assert_eq!(credentials, "[registry]\ntoken = \"some token\"\n");
 }
@@ -2664,6 +2647,6 @@ fn http_requires_z_flag() {
 
     p.cargo("build")
         .with_status(101)
-        .with_stderr_contains("  Usage of HTTP-based registries requires `-Z http-registry`")
+        .with_stderr_contains("  usage of HTTP-based registries requires `-Z http-registry`")
         .run();
 }

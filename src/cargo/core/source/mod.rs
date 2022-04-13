@@ -117,7 +117,11 @@ pub trait Source {
 
 pub enum MaybePackage {
     Ready(Package),
-    Download { url: String, descriptor: String },
+    Download {
+        url: String,
+        descriptor: String,
+        authorization: Option<String>,
+    },
 }
 
 impl<'a, T: Source + ?Sized + 'a> Source for Box<T> {

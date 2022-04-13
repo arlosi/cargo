@@ -16,6 +16,7 @@ use log::{log, Level};
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use termcolor::Color::Green;
 use termcolor::ColorSpec;
+use url::Url;
 
 use crate::core::dependency::DepKind;
 use crate::core::manifest::ManifestMetadata;
@@ -24,19 +25,20 @@ use crate::core::source::Source;
 use crate::core::{Package, SourceId, Workspace};
 use crate::ops;
 use crate::sources::{RegistrySource, SourceConfigMap, CRATES_IO_DOMAIN, CRATES_IO_REGISTRY};
-use crate::util::config::{self, Config, SslVersionConfig, SslVersionConfigRange};
+use crate::util::auth::AuthorizationError;
+use crate::util::config::{Config, SslVersionConfig, SslVersionConfigRange};
 use crate::util::errors::CargoResult;
 use crate::util::important_paths::find_root_manifest_for_wd;
-use crate::util::IntoUrl;
+use crate::util::{truncate_with_ellipsis, IntoUrl};
 use crate::{drop_print, drop_println, version};
 
-mod auth;
+use crate::util::auth;
 
 /// Registry settings loaded from config files.
 ///
 /// This is loaded based on the `--registry` flag and the config settings.
 #[derive(Debug)]
-pub enum RegistryConfig {
+pub enum RegistryCredentialConfig {
     None,
     /// The authentication token.
     Token(String),
@@ -44,7 +46,7 @@ pub enum RegistryConfig {
     Process((PathBuf, Vec<String>)),
 }
 
-impl RegistryConfig {
+impl RegistryCredentialConfig {
     /// Returns `true` if the credential is [`None`].
     ///
     /// [`None`]: Credential::None
@@ -124,9 +126,9 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
         }
     }
 
-    let (mut registry, _reg_cfg, reg_id) = registry(
+    let (mut registry, reg_id) = registry(
         opts.config,
-        opts.token.clone(),
+        opts.token.as_deref(),
         opts.index.as_deref(),
         publish_registry.as_deref(),
         true,
@@ -356,102 +358,38 @@ fn transmit(
     Ok(())
 }
 
-/// Returns the index and token from the config file for the given registry.
-///
-/// `registry` is typically the registry specified on the command-line. If
-/// `None`, `index` is set to `None` to indicate it should use crates.io.
-pub fn registry_configuration(
-    config: &Config,
-    registry: Option<&str>,
-) -> CargoResult<RegistryConfig> {
-    let err_both = |token_key: &str, proc_key: &str| {
-        Err(format_err!(
-            "both `{token_key}` and `{proc_key}` \
-             were specified in the config\n\
-             Only one of these values may be set, remove one or the other to proceed.",
-        ))
-    };
-    // `registry.default` is handled in command-line parsing.
-    let (token, process) = match registry {
-        Some(registry) => {
-            let token_key = format!("registries.{registry}.token");
-            let token = config.get_string(&token_key)?.map(|p| p.val);
-            let process = if config.cli_unstable().credential_process {
-                let mut proc_key = format!("registries.{registry}.credential-process");
-                let mut process = config.get::<Option<config::PathAndArgs>>(&proc_key)?;
-                if process.is_none() && token.is_none() {
-                    // This explicitly ignores the global credential-process if
-                    // the token is set, as that is "more specific".
-                    proc_key = String::from("registry.credential-process");
-                    process = config.get::<Option<config::PathAndArgs>>(&proc_key)?;
-                } else if process.is_some() && token.is_some() {
-                    return err_both(&token_key, &proc_key);
-                }
-                process
-            } else {
-                None
-            };
-            (token, process)
-        }
-        None => {
-            // Use crates.io default.
-            config.check_registry_index_not_set()?;
-            let token = config.get_string("registry.token")?.map(|p| p.val);
-            let process = if config.cli_unstable().credential_process {
-                let process =
-                    config.get::<Option<config::PathAndArgs>>("registry.credential-process")?;
-                if token.is_some() && process.is_some() {
-                    return err_both("registry.token", "registry.credential-process");
-                }
-                process
-            } else {
-                None
-            };
-            (token, process)
-        }
-    };
-
-    let credential_process =
-        process.map(|process| (process.path.resolve_program(config), process.args));
-
-    Ok(match (token, credential_process) {
-        (None, None) => RegistryConfig::None,
-        (None, Some(process)) => RegistryConfig::Process(process),
-        (Some(x), None) => RegistryConfig::Token(x),
-        (Some(_), Some(_)) => unreachable!("Only one of these values may be set."),
-    })
-}
-
 /// Returns the `Registry` and `Source` based on command-line and config settings.
 ///
-/// * `token`: The token from the command-line. If not set, uses the token
-///   from the config.
+/// * `token_from_cmdline`: The token from the command-line. If not set,
+///   uses the token from the config.
 /// * `index`: The index URL from the command-line. This is ignored if
 ///   `registry` is set.
 /// * `registry`: The registry name from the command-line. If neither
 ///   `registry`, or `index` are set, then uses `crates-io`, honoring
 ///   `[source]` replacement if defined.
 /// * `force_update`: If `true`, forces the index to be updated.
-/// * `validate_token`: If `true`, the token must be set.
+/// * `token_required`: If `true`, the token will be set.
 fn registry(
     config: &Config,
-    token: Option<String>,
+    token_from_cmdline: Option<&str>,
     index: Option<&str>,
     registry: Option<&str>,
     force_update: bool,
-    validate_token: bool,
-) -> CargoResult<(Registry, RegistryConfig, SourceId)> {
-    if index.is_some() && registry.is_some() {
+    token_required: bool,
+) -> CargoResult<(Registry, SourceId)> {
+    let opt_index = match (index, registry) {
+        (Some(index), None) => Some(index.into_url()?),
+        (None, Some(registry)) => Some(config.get_registry_index(registry)?),
         // Otherwise we would silently ignore one or the other.
-        bail!("both `--index` and `--registry` should not be set at the same time");
-    }
-    // Parse all configuration options
-    let reg_cfg = registry_configuration(config, registry)?;
-    let opt_index = registry
-        .map(|r| config.get_registry_index(r))
-        .transpose()?
-        .map(|u| u.to_string());
-    let sid = get_source_id(config, opt_index.as_deref().or(index), registry)?;
+        (Some(_), Some(_)) => {
+            bail!("both `--index` and `--registry` should not be set at the same time")
+        }
+        (None, None) => None,
+    };
+    // `sid_no_replacement` should be used for getting the authorization token.
+    // `sid` should be used for all other purposes.
+    let sid_no_replacement = get_source_id(config, opt_index.as_ref(), registry, false)?;
+    let sid = get_source_id(config, opt_index.as_ref(), registry, true)?;
     if !sid.is_remote_registry() {
         bail!(
             "{} does not support API commands.\n\
@@ -459,10 +397,18 @@ fn registry(
             sid
         );
     }
-    let api_host = {
+
+    if token_required && index.is_some() && token_from_cmdline.is_none() {
+        bail!("command-line argument --index requires --token to be specified");
+    }
+    if let Some(token) = token_from_cmdline {
+        auth::cache_token(config, &sid_no_replacement, token);
+    }
+
+    let cfg = {
         let _lock = config.acquire_package_cache_lock()?;
         let mut src = RegistrySource::remote(sid, &HashSet::new(), config)?;
-        // Only update the index if the config is not available or `force` is set.
+        // Only update the index if `force_update` is set.
         if force_update {
             src.invalidate_cache()
         }
@@ -475,45 +421,41 @@ fn registry(
             }
         };
 
-        cfg.and_then(|cfg| cfg.api)
-            .ok_or_else(|| format_err!("{} does not support API commands", sid))?
+        cfg.expect("remote registries must have config")
     };
-    let token = if validate_token {
-        if index.is_some() {
-            if token.is_none() {
-                bail!("command-line argument --index requires --token to be specified");
-            }
-            token
-        } else {
-            // Check `is_default_registry` so that the crates.io index can
-            // change config.json's "api" value, and this won't affect most
-            // people. It will affect those using source replacement, but
-            // hopefully that's a relatively small set of users.
-            if token.is_none()
-                && reg_cfg.is_token()
-                && registry.is_none()
-                && !sid.is_default_registry()
-                && !crates_io::is_url_crates_io(&api_host)
-            {
-                config.shell().warn(
-                    "using `registry.token` config value with source \
-                        replacement is deprecated\n\
-                        This may become a hard error in the future; \
-                        see <https://github.com/rust-lang/cargo/issues/xxx>.\n\
-                        Use the --token command-line flag to remove this warning.",
-                )?;
-                reg_cfg.as_token().map(|t| t.to_owned())
-            } else {
-                let token =
-                    auth::auth_token(config, token.as_deref(), &reg_cfg, registry, &api_host)?;
-                Some(token)
-            }
+    let api_host = cfg
+        .api
+        .ok_or_else(|| format_err!("{} does not support API commands", sid))?;
+
+    let token = if token_required {
+        // Check `is_default_registry` so that the crates.io index can
+        // change config.json's "api" value, and this won't affect most
+        // people. It will affect those using source replacement, but
+        // hopefully that's a relatively small set of users.
+        if index.is_none()
+            && token_from_cmdline.is_none()
+            && sid_no_replacement.is_default_registry()
+            && !sid.is_default_registry()
+            && !crates_io::is_url_crates_io(&api_host)
+            && auth::registry_credential_config(config, &sid_no_replacement)?.is_token()
+        {
+            config.shell().warn(
+                "using `registry.token` config value with source \
+                    replacement is deprecated\n\
+                    This may become a hard error in the future; \
+                    see <https://github.com/rust-lang/cargo/issues/6545>.\n\
+                    Use the --token command-line flag to remove this warning.",
+            )?;
         }
+        Some(auth::auth_token(config, &sid_no_replacement, None)?)
     } else {
         None
     };
     let handle = http_handle(config)?;
-    Ok((Registry::new_handle(api_host, token, handle), reg_cfg, sid))
+    Ok((
+        Registry::new_handle(api_host, token, handle, cfg.auth_required),
+        sid,
+    ))
 }
 
 /// Creates a new HTTP handle with appropriate global configuration for cargo.
@@ -715,22 +657,39 @@ fn http_proxy_exists(config: &Config) -> CargoResult<bool> {
     }
 }
 
-pub fn registry_login(
-    config: &Config,
-    token: Option<String>,
-    reg: Option<String>,
-) -> CargoResult<()> {
-    let (registry, reg_cfg, _) =
-        registry(config, token.clone(), None, reg.as_deref(), false, false)?;
-
+pub fn registry_login(config: &Config, token: Option<&str>, reg: Option<&str>) -> CargoResult<()> {
+    let opt_index = reg.map(|r| config.get_registry_index(&r)).transpose()?;
+    let sid = get_source_id(config, opt_index.as_ref(), reg, false)?;
+    let reg_cfg = auth::registry_credential_config(config, &sid)?;
     let token = match token {
-        Some(token) => token,
+        Some(token) => token.to_string(),
         None => {
-            drop_println!(
-                config,
-                "please paste the API Token found on {}/me below",
-                registry.host()
-            );
+            match registry(config, token, None, reg, false, false) {
+                Ok((registry, _)) => drop_println!(
+                    config,
+                    "please paste the token found on {}/me below",
+                    registry.host()
+                ),
+                Err(e) => {
+                    if let Some(login_url) = e
+                        .downcast_ref::<AuthorizationError>()
+                        .and_then(|e| e.login_url.as_ref())
+                    {
+                        drop_println!(
+                            config,
+                            "please paste the token found on {} below",
+                            login_url
+                        )
+                    } else {
+                        drop_println!(
+                            config,
+                            "please paste the token for {} below",
+                            sid.display_registry_name()
+                        )
+                    }
+                }
+            };
+
             let mut line = String::new();
             let input = io::stdin();
             input
@@ -743,34 +702,27 @@ pub fn registry_login(
         }
     };
 
-    if let RegistryConfig::Token(old_token) = &reg_cfg {
+    if let RegistryCredentialConfig::Token(old_token) = &reg_cfg {
         if old_token == &token {
             config.shell().status("Login", "already logged in")?;
             return Ok(());
         }
     }
 
-    auth::login(
-        config,
-        token,
-        reg_cfg.as_process(),
-        reg.as_deref(),
-        registry.host(),
-    )?;
+    auth::login(config, &sid, token)?;
 
     config.shell().status(
         "Login",
-        format!(
-            "token for `{}` saved",
-            reg.as_ref().map_or(CRATES_IO_DOMAIN, String::as_str)
-        ),
+        format!("token for `{}` saved", reg.unwrap_or(CRATES_IO_DOMAIN)),
     )?;
     Ok(())
 }
 
-pub fn registry_logout(config: &Config, reg: Option<String>) -> CargoResult<()> {
-    let (registry, reg_cfg, _) = registry(config, None, None, reg.as_deref(), false, false)?;
-    let reg_name = reg.as_deref().unwrap_or(CRATES_IO_DOMAIN);
+pub fn registry_logout(config: &Config, reg: Option<&str>) -> CargoResult<()> {
+    let opt_index = reg.map(|r| config.get_registry_index(&r)).transpose()?;
+    let sid = get_source_id(config, opt_index.as_ref(), reg, false)?;
+    let reg_cfg = auth::registry_credential_config(config, &sid)?;
+    let reg_name = sid.display_registry_name();
     if reg_cfg.is_none() {
         config.shell().status(
             "Logout",
@@ -778,12 +730,7 @@ pub fn registry_logout(config: &Config, reg: Option<String>) -> CargoResult<()> 
         )?;
         return Ok(());
     }
-    auth::logout(
-        config,
-        reg_cfg.as_process(),
-        reg.as_deref(),
-        registry.host(),
-    )?;
+    auth::logout(config, &sid)?;
     config.shell().status(
         "Logout",
         format!(
@@ -814,9 +761,9 @@ pub fn modify_owners(config: &Config, opts: &OwnersOptions) -> CargoResult<()> {
         }
     };
 
-    let (mut registry, _, _) = registry(
+    let (mut registry, _) = registry(
         config,
-        opts.token.clone(),
+        opts.token.as_deref(),
         opts.index.as_deref(),
         opts.registry.as_deref(),
         true,
@@ -893,8 +840,14 @@ pub fn yank(
         None => bail!("a version must be specified to yank"),
     };
 
-    let (mut registry, _, _) =
-        registry(config, token, index.as_deref(), reg.as_deref(), true, true)?;
+    let (mut registry, _) = registry(
+        config,
+        token.as_deref(),
+        index.as_deref(),
+        reg.as_deref(),
+        true,
+        true,
+    )?;
 
     if undo {
         config
@@ -922,15 +875,24 @@ pub fn yank(
 ///
 /// The `index` and `reg` values are from the command-line or config settings.
 /// If both are None, returns the source for crates.io.
-fn get_source_id(config: &Config, index: Option<&str>, reg: Option<&str>) -> CargoResult<SourceId> {
-    match (reg, index) {
+fn get_source_id(
+    config: &Config,
+    index: Option<&Url>,
+    reg: Option<&str>,
+    follow_source_replacement: bool,
+) -> CargoResult<SourceId> {
+    let sid = match (reg, index) {
         (Some(r), _) => SourceId::alt_registry(config, r),
-        (_, Some(i)) => SourceId::for_registry(&i.into_url()?),
-        _ => {
-            let map = SourceConfigMap::new(config)?;
-            let src = map.load(SourceId::crates_io(config)?, &HashSet::new())?;
-            Ok(src.replaced_source_id())
-        }
+        (_, Some(i)) => SourceId::for_registry(i),
+        (None, None) => SourceId::crates_io(config),
+    };
+
+    if follow_source_replacement {
+        let map = SourceConfigMap::new(config)?;
+        let src = map.load(sid?, &HashSet::new())?;
+        Ok(src.replaced_source_id())
+    } else {
+        sid
     }
 }
 
@@ -941,19 +903,7 @@ pub fn search(
     limit: u32,
     reg: Option<String>,
 ) -> CargoResult<()> {
-    fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
-        // We should truncate at grapheme-boundary and compute character-widths,
-        // yet the dependencies on unicode-segmentation and unicode-width are
-        // not worth it.
-        let mut chars = s.chars();
-        let mut prefix = (&mut chars).take(max_width - 1).collect::<String>();
-        if chars.next().is_some() {
-            prefix.push('…');
-        }
-        prefix
-    }
-
-    let (mut registry, _, source_id) =
+    let (mut registry, source_id) =
         registry(config, None, index.as_deref(), reg.as_deref(), false, false)?;
     let (crates, total_crates) = registry.search(query, limit).with_context(|| {
         format!(

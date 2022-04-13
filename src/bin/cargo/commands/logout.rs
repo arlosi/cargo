@@ -15,7 +15,6 @@ pub fn exec(config: &mut Config, args: &ArgMatches) -> CliResult {
             .cli_unstable()
             .fail_if_stable_command(config, "logout", 8933)?;
     }
-    config.load_credentials()?;
-    ops::registry_logout(config, args.value_of("registry").map(String::from))?;
+    ops::registry_logout(config, args.value_of("registry"))?;
     Ok(())
 }

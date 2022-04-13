@@ -33,7 +33,7 @@ fn gated() {
         .with_stderr(
             "\
 [UPDATING] [..]
-[ERROR] no upload token found, please run `cargo login` or pass `--token`
+[ERROR] no token found, please run `cargo login`
 ",
         )
         .run();
@@ -52,7 +52,7 @@ fn gated() {
         .with_stderr(
             "\
 [UPDATING] [..]
-[ERROR] no upload token found, please run `cargo login` or pass `--token`
+[ERROR] no token found for `alternative`, please run `cargo login --registry alternative`
 ",
         )
         .run();
@@ -94,8 +94,8 @@ fn warn_both_token_and_process() {
         .with_status(101)
         .with_stderr(
             "\
-[ERROR] both `registries.alternative.token` and `registries.alternative.credential-process` \
-were specified in the config\n\
+[UPDATING] [..]
+[ERROR] both `token` and `credential-process` were specified in the config for registry `alternative`.
 Only one of these values may be set, remove one or the other to proceed.
 ",
         )
@@ -223,7 +223,6 @@ fn basic_unsupported() {
         .with_status(101)
         .with_stderr(
             "\
-[UPDATING] [..]
 [ERROR] credential process `false` cannot be used to log in, \
 the credential-process configuration value must pass the \
 `{action}` argument in the config to support this command
@@ -246,7 +245,7 @@ the credential-process configuration value must pass the \
 
 #[cargo_test]
 fn login() {
-    registry::init();
+    registry::RegistryBuilder::new().add_tokens(false).build();
     // The credential process to use.
     let cred_proj = project()
         .at("cred_proj")
@@ -257,8 +256,7 @@ fn login() {
                 use std::io::Read;
 
                 fn main() {
-                    assert_eq!(std::env::var("CARGO_REGISTRY_NAME").unwrap(), "crates-io");
-                    assert_eq!(std::env::var("CARGO_REGISTRY_API_URL").unwrap(), "__API__");
+                    assert_eq!(std::env::var("CARGO_REGISTRY_INDEX_URL").unwrap(), "https://github.com/rust-lang/crates.io-index");
                     assert_eq!(std::env::args().skip(1).next().unwrap(), "store");
                     let mut buffer = String::new();
                     std::io::stdin().read_to_string(&mut buffer).unwrap();
@@ -266,7 +264,6 @@ fn login() {
                     std::fs::write("token-store", buffer).unwrap();
                 }
             "#
-            .replace("__API__", &registry::api_url().to_string()),
         )
         .build();
     cred_proj.cargo("build").run();
@@ -288,7 +285,6 @@ fn login() {
         .masquerade_as_nightly_cargo()
         .with_stderr(
             "\
-[UPDATING] [..]
 [LOGIN] token for `crates.io` saved
 ",
         )
@@ -312,11 +308,10 @@ fn logout() {
                 use std::io::Read;
 
                 fn main() {
-                    assert_eq!(std::env::var("CARGO_REGISTRY_NAME").unwrap(), "crates-io");
+                    assert_eq!(std::env::var("CARGO_REGISTRY_INDEX_URL").unwrap(), "https://github.com/rust-lang/crates.io-index");
                     assert_eq!(std::env::args().skip(1).next().unwrap(), "erase");
                     std::fs::write("token-store", "").unwrap();
-                    eprintln!("token for `{}` has been erased!",
-                        std::env::var("CARGO_REGISTRY_NAME").unwrap());
+                    eprintln!("token has been erased!")
                 }
             "#,
         )
@@ -340,9 +335,8 @@ fn logout() {
         .masquerade_as_nightly_cargo()
         .with_stderr(
             "\
-[UPDATING] [..]
-token for `crates-io` has been erased!
-[LOGOUT] token for `crates.io` has been removed from local storage
+token has been erased!
+[LOGOUT] token for `crates-io` has been removed from local storage
 ",
         )
         .run();
@@ -407,7 +401,6 @@ fn libexec_path() {
             // On Windows, changing to a custom executable resolver has changed the
             // error messages.
             &format!("\
-[UPDATING] [..]
 [ERROR] failed to execute `[..]libexec/cargo-credential-doesnotexist[EXE]` to store authentication token for registry `crates-io`
 
 Caused by:

@@ -160,8 +160,8 @@ fn old_token_location() {
     p.cargo("publish --no-verify")
         .with_status(101)
         .with_stderr_contains(
-            "[ERROR] no upload token found, \
-            please run `cargo login` or pass `--token`",
+            "[ERROR] no token found, \
+            please run `cargo login`",
         )
         .run();
 
@@ -1024,8 +1024,8 @@ fn publish_checks_for_token_before_verify() {
     p.cargo("publish")
         .with_status(101)
         .with_stderr_contains(
-            "[ERROR] no upload token found, \
-            please run `cargo login` or pass `--token`",
+            "[ERROR] no token found, \
+            please run `cargo login`",
         )
         .with_stderr_does_not_contain("[VERIFYING] foo v0.0.1 ([CWD])")
         .run();
@@ -1354,7 +1354,6 @@ fn index_requires_token() {
         .with_status(101)
         .with_stderr(
             "\
-[UPDATING] [..]
 [ERROR] command-line argument --index requires --token to be specified
 ",
         )

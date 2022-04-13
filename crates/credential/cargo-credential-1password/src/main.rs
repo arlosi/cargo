@@ -223,13 +223,7 @@ impl OnePasswordKeychain {
         Ok(())
     }
 
-    fn create(
-        &self,
-        session: &Option<String>,
-        registry_name: &str,
-        api_url: &str,
-        token: &str,
-    ) -> Result<(), Error> {
+    fn create(&self, session: &Option<String>, index_url: &str, token: &str) -> Result<(), Error> {
         let cmd = self.make_cmd(
             session,
             &[
@@ -237,9 +231,7 @@ impl OnePasswordKeychain {
                 "item",
                 "Login",
                 &format!("password={}", token),
-                &format!("url={}", api_url),
-                "--title",
-                registry_name,
+                &format!("url={}", index_url),
                 "--tags",
                 CARGO_TAG,
             ],
@@ -276,36 +268,36 @@ impl Credential for OnePasswordKeychain {
         env!("CARGO_PKG_NAME")
     }
 
-    fn get(&self, registry_name: &str, _api_url: &str) -> Result<String, Error> {
+    fn get(&self, index_url: &str) -> Result<String, Error> {
         let session = self.signin()?;
-        if let Some(uuid) = self.search(&session, registry_name)? {
+        if let Some(uuid) = self.search(&session, index_url)? {
             self.get_token(&session, &uuid)
         } else {
             return Err(format!(
                 "no 1password entry found for registry `{}`, try `cargo login` to add a token",
-                registry_name
+                index_url
             )
             .into());
         }
     }
 
-    fn store(&self, registry_name: &str, api_url: &str, token: &str) -> Result<(), Error> {
+    fn store(&self, index_url: &str, token: &str) -> Result<(), Error> {
         let session = self.signin()?;
         // Check if an item already exists.
-        if let Some(uuid) = self.search(&session, registry_name)? {
+        if let Some(uuid) = self.search(&session, index_url)? {
             self.modify(&session, &uuid, token)
         } else {
-            self.create(&session, registry_name, api_url, token)
+            self.create(&session, index_url, token)
         }
     }
 
-    fn erase(&self, registry_name: &str, _api_url: &str) -> Result<(), Error> {
+    fn erase(&self, index_url: &str) -> Result<(), Error> {
         let session = self.signin()?;
         // Check if an item already exists.
-        if let Some(uuid) = self.search(&session, registry_name)? {
+        if let Some(uuid) = self.search(&session, index_url)? {
             self.delete(&session, &uuid)?;
         } else {
-            eprintln!("not currently logged in to `{}`", registry_name);
+            eprintln!("not currently logged in to `{}`", index_url);
         }
         Ok(())
     }

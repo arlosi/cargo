@@ -31,8 +31,6 @@ pub fn cli() -> App {
 }
 
 pub fn exec(config: &mut Config, args: &ArgMatches) -> CliResult {
-    config.load_credentials()?;
-
     let registry = args.registry(config)?;
     let opts = OwnersOptions {
         krate: args.value_of("crate").map(|s| s.to_string()),

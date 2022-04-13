@@ -29,8 +29,8 @@ impl Credential for WindowsCredential {
         env!("CARGO_PKG_NAME")
     }
 
-    fn get(&self, registry_name: &str, _api_url: &str) -> Result<String, Error> {
-        let target_name = target_name(registry_name);
+    fn get(&self, index_url: &str) -> Result<String, Error> {
+        let target_name = target_name(index_url);
         let mut p_credential: wincred::PCREDENTIALW = std::ptr::null_mut();
         unsafe {
             if wincred::CredReadW(
@@ -52,9 +52,9 @@ impl Credential for WindowsCredential {
         }
     }
 
-    fn store(&self, registry_name: &str, _api_url: &str, token: &str) -> Result<(), Error> {
+    fn store(&self, index_url: &str, token: &str) -> Result<(), Error> {
         let token = token.as_bytes();
-        let target_name = target_name(registry_name);
+        let target_name = target_name(index_url);
         let comment = wstr("Cargo registry token");
         let mut credential = wincred::CREDENTIALW {
             Flags: 0,
@@ -78,14 +78,14 @@ impl Credential for WindowsCredential {
         Ok(())
     }
 
-    fn erase(&self, registry_name: &str, _api_url: &str) -> Result<(), Error> {
-        let target_name = target_name(registry_name);
+    fn erase(&self, index_url: &str) -> Result<(), Error> {
+        let target_name = target_name(index_url);
         let result =
             unsafe { wincred::CredDeleteW(target_name.as_ptr(), wincred::CRED_TYPE_GENERIC, 0) };
         if result != TRUE {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(winerror::ERROR_NOT_FOUND as i32) {
-                eprintln!("not currently logged in to `{}`", registry_name);
+                eprintln!("not currently logged in to `{}`", index_url);
                 return Ok(());
             }
             return Err(format!("failed to remove token: {}", err).into());

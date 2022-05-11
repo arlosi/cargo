@@ -125,17 +125,24 @@ struct Download {
     data: RefCell<Vec<u8>>,
 
     /// HTTP headers.
-    header_map: RefCell<HashMap<String, Vec<String>>>,
+    header_map: RefCell<Headers>,
 
     /// Statistics updated from the progress callback in libcurl.
     total: Cell<u64>,
     current: Cell<u64>,
 }
 
+#[derive(Default)]
+struct Headers {
+    last_modified: Option<String>,
+    etag: Option<String>,
+    www_authenticate: Vec<String>,
+}
+
 struct CompletedDownload {
     response_code: u32,
     data: Vec<u8>,
-    header_map: HashMap<String, Vec<String>>,
+    header_map: Headers,
 }
 
 impl<'cfg> HttpRegistry<'cfg> {
@@ -399,10 +406,10 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
 
             match result.response_code {
                 200 => {
-                    let response_index_version = if let Some(etag) = result.header_map.get(ETAG) {
-                        format!("{}: {}", ETAG, etag[0])
-                    } else if let Some(lm) = result.header_map.get(LAST_MODIFIED) {
-                        format!("{}: {}", LAST_MODIFIED, lm[0])
+                    let response_index_version = if let Some(etag) = result.header_map.etag {
+                        format!("{}: {}", ETAG, etag)
+                    } else if let Some(lm) = result.header_map.last_modified {
+                        format!("{}: {}", LAST_MODIFIED, lm)
                     } else {
                         UNKNOWN.to_string()
                     };
@@ -430,14 +437,25 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
                     self.fresh.remove(path);
                     self.auth_required = true;
 
-                    // Look for www-authenticate header of the form: "Cargo login_url=..."
-                    self.login_url = (|| {
-                        www_authenticate::parse(result.header_map.get(WWW_AUTHENTICATE)?)
-                            .get("Cargo")?
-                            .get("login_url")?
-                            .into_url()
-                            .ok()
-                    })();
+                    // Look for a `www-authenticate` header with the `Cargo` scheme.
+                    for header in &result.header_map.www_authenticate {
+                        for challenge in http_auth::ChallengeParser::new(header) {
+                            match challenge {
+                                Ok(challenge) if challenge.scheme.eq_ignore_ascii_case("Cargo") => {
+                                    // Look for the `login_url` parameter.
+                                    for (param, value) in challenge.params {
+                                        if param.eq_ignore_ascii_case("login_url") {
+                                            self.login_url = Some(value.to_unescaped().into_url()?);
+                                        }
+                                    }
+                                }
+                                Ok(challenge) => {
+                                    debug!("ignoring non-Cargo challenge: {}", challenge.scheme)
+                                }
+                                Err(e) => debug!("failed to parse challenge: {}", e),
+                            }
+                        }
+                    }
                 }
                 401 if self.auth_required => {
                     let body = String::from_utf8_lossy(&result.data);
@@ -571,11 +589,15 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
         // And ditto for the header function.
         handle.header_function(move |buf| {
             if let Some((tag, value)) = Self::handle_http_header(buf) {
-                let tag = tag.to_ascii_lowercase();
                 tls::with(|downloads| {
                     if let Some(downloads) = downloads {
                         let mut header_map = downloads.pending[&token].0.header_map.borrow_mut();
-                        header_map.entry(tag).or_default().push(value.to_string());
+                        match tag.to_ascii_lowercase().as_str() {
+                            LAST_MODIFIED => header_map.last_modified = Some(value.to_string()),
+                            ETAG => header_map.etag = Some(value.to_string()),
+                            WWW_AUTHENTICATE => header_map.www_authenticate.push(value.to_string()),
+                            _ => {}
+                        }
                     }
                 });
             }
@@ -585,9 +607,9 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
 
         let dl = Download {
             token,
-            data: RefCell::new(Vec::new()),
             path: path.to_path_buf(),
-            header_map: RefCell::new(HashMap::new()),
+            data: RefCell::new(Vec::new()),
+            header_map: Default::default(),
             total: Cell::new(0),
             current: Cell::new(0),
         };
@@ -706,116 +728,6 @@ impl<'cfg> Downloads<'cfg> {
     }
 }
 
-mod www_authenticate {
-    use std::{collections::HashMap, mem::take};
-
-    enum State {
-        /// Either a challenge name or a parameter name.
-        NameOrKey,
-        /// A parameter value.
-        Value,
-        /// A quoted parameter value.
-        QuotedValue,
-    }
-
-    /// Parse a `www-authenticate` header into a map of "challenges" and their parameters.
-    /// See IETF RFC 7235 https://datatracker.ietf.org/doc/html/rfc7235#section-4.1 for details.
-    pub fn parse<T: AsRef<str>>(header_values: &[T]) -> HashMap<String, HashMap<String, String>> {
-        let mut challenges = HashMap::new();
-        for header in header_values {
-            let mut state = State::NameOrKey;
-            let mut name_or_key = String::new();
-            let mut challenge_name = String::new();
-            let mut value = String::new();
-            let mut parameters = HashMap::new();
-            let mut chars = header.as_ref().chars();
-            loop {
-                let c = chars.next();
-                match state {
-                    State::NameOrKey => match c {
-                        Some(' ') | Some(',') | None => {
-                            if !name_or_key.is_empty() || c.is_none() {
-                                if !challenge_name.is_empty() {
-                                    // We completed parsing a new challenge name, so the previous challenge
-                                    // is complete and we can insert it.
-                                    challenges.insert(challenge_name, take(&mut parameters));
-                                }
-                                // Store the name of the next challenge.
-                                challenge_name = take(&mut name_or_key);
-                            }
-                            if !challenge_name.is_empty() && c.is_none() {
-                                // Special case: parsing a challenge with no parameters at the end of the challenge list.
-                                challenges.insert(take(&mut challenge_name), take(&mut parameters));
-                            }
-                            if c.is_none() {
-                                break; // Finished parsing this header.
-                            }
-                        }
-                        Some('=') => state = State::Value,
-                        Some(c) => name_or_key.push(c),
-                    },
-                    State::Value => match c {
-                        Some(',') | None => {
-                            parameters.insert(take(&mut name_or_key), take(&mut value));
-                            state = State::NameOrKey;
-                        }
-                        Some('"') => state = State::QuotedValue,
-                        Some(c) => value.push(c),
-                    },
-                    State::QuotedValue => match c {
-                        Some('\\') => {
-                            if let Some(escaped) = chars.next() {
-                                value.push(escaped)
-                            }
-                        }
-                        Some('"') | None => state = State::Value,
-                        Some(c) => value.push(c),
-                    },
-                }
-            }
-        }
-        challenges
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::parse;
-
-        static CASE1: &'static str = "Cargo login_url=https://crates.io/me";
-        static CASE2: &'static str = r#"Newauth realm="apps", type=1, title="Login to \"apps\"""#;
-        static CASE3: &'static str = r#"Basic realm="simple""#;
-        static CASE4: &'static str = r#"NoParameters"#;
-
-        #[test]
-        fn empty() {
-            let challenges = parse(&[""]);
-            assert_eq!(0, challenges.len());
-        }
-
-        #[test]
-        fn simple() {
-            let challenges = parse(&[CASE1]);
-            assert_eq!(1, challenges.len());
-            assert_eq!("https://crates.io/me", challenges["Cargo"]["login_url"]);
-        }
-
-        #[test]
-        fn complex() {
-            let challenges = parse(&[
-                &format!("{}, {}", CASE1, CASE2),
-                &format!("{}, {}", CASE3, CASE4),
-            ]);
-            assert_eq!(4, challenges.len());
-            assert_eq!("https://crates.io/me", challenges["Cargo"]["login_url"]);
-            assert_eq!("apps", challenges["Newauth"]["realm"]);
-            assert_eq!("1", challenges["Newauth"]["type"]);
-            assert_eq!("Login to \"apps\"", challenges["Newauth"]["title"]);
-            assert_eq!("simple", challenges["Basic"]["realm"]);
-            assert!(challenges["NoParameters"].is_empty());
-        }
-    }
-}
-
 mod tls {
     use super::Downloads;
     use std::cell::Cell;
@@ -827,7 +739,6 @@ mod tls {
         if ptr == 0 {
             f(None)
         } else {
-            // Safety: * `ptr` is only set by `set` below which ensures the type is correct.
             let ptr = unsafe { &*(ptr as *const Downloads<'_>) };
             f(Some(ptr))
         }

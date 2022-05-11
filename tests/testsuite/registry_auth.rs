@@ -1,10 +1,7 @@
 //! Tests for normal registry dependencies.
 
-use cargo_test_support::registry::{
-    alt_registry_path, alt_registry_url, serve_registry, Package, RegistryBuilder,
-};
-use cargo_test_support::{paths, project, Execs, Project};
-use url::Url;
+use cargo_test_support::registry::{Package, RegistryBuilder};
+use cargo_test_support::{project, Execs, Project};
 
 fn cargo(p: &Project, s: &str) -> Execs {
     let mut e = p.cargo(s);
@@ -46,10 +43,7 @@ static SUCCCESS_OUTPUT: &'static str = "\
 
 #[cargo_test]
 fn requires_nightly() {
-    RegistryBuilder::new()
-        .alternative(true)
-        .auth_required()
-        .build();
+    let _registry = RegistryBuilder::new().alternative().auth_required().build();
 
     let p = make_project();
     p.cargo("build")
@@ -60,11 +54,10 @@ fn requires_nightly() {
 
 #[cargo_test]
 fn simple() {
-    let server = serve_registry(alt_registry_path(), Some("api-token".to_string()));
-    RegistryBuilder::new()
-        .alternative(true)
+    let _registry = RegistryBuilder::new()
+        .alternative()
         .auth_required()
-        .http(server.url())
+        .http_index()
         .build();
 
     let p = make_project();
@@ -73,50 +66,47 @@ fn simple() {
 
 #[cargo_test]
 fn environment_config() {
-    let server = serve_registry(alt_registry_path(), Some("env-token".to_string()));
-    RegistryBuilder::new()
-        .alternative(true)
+    let registry = RegistryBuilder::new()
+        .alternative()
         .auth_required()
-        .http(server.url())
+        .no_configure_registry()
+        .no_configure_token()
+        .http_index()
         .build();
     let p = make_project();
-
-    // Delete the config
-    let config_path = paths::home().join(".cargo/config");
-    std::fs::remove_file(&config_path).unwrap();
-
     cargo(&p, "build")
-        .env("CARGO_REGISTRIES_ALTERNATIVE_INDEX", server.url().as_str())
-        .env("CARGO_REGISTRIES_ALTERNATIVE_TOKEN", "env-token")
+        .env(
+            "CARGO_REGISTRIES_ALTERNATIVE_INDEX",
+            registry.index_url().as_str(),
+        )
+        .env("CARGO_REGISTRIES_ALTERNATIVE_TOKEN", registry.token())
         .with_stderr(SUCCCESS_OUTPUT)
         .run();
 }
 
 #[cargo_test]
 fn environment_token() {
-    let server = serve_registry(alt_registry_path(), Some("env-token".to_string()));
-    RegistryBuilder::new()
-        .alternative(true)
+    let registry = RegistryBuilder::new()
+        .alternative()
         .auth_required()
-        .http(server.url())
+        .no_configure_token()
+        .http_index()
         .build();
 
     let p = make_project();
-
     cargo(&p, "build")
-        .env("CARGO_REGISTRIES_ALTERNATIVE_TOKEN", "env-token")
+        .env("CARGO_REGISTRIES_ALTERNATIVE_TOKEN", registry.token())
         .with_stderr(SUCCCESS_OUTPUT)
         .run();
 }
 
 #[cargo_test]
 fn missing_token() {
-    let server = serve_registry(alt_registry_path(), Some("invalid".to_string()));
-    RegistryBuilder::new()
-        .alternative(true)
+    let _registry = RegistryBuilder::new()
+        .alternative()
         .auth_required()
-        .add_tokens(false)
-        .http(server.url())
+        .no_configure_token()
+        .http_index()
         .build();
 
     let p = make_project();
@@ -134,16 +124,42 @@ Caused by:
 }
 
 #[cargo_test]
-fn incorrect_token() {
-    let server = serve_registry(alt_registry_path(), Some("invalid".to_string()));
-    RegistryBuilder::new()
-        .alternative(true)
+fn missing_token_git() {
+    let _registry = RegistryBuilder::new()
+        .alternative()
         .auth_required()
-        .http(server.url())
+        .no_configure_token()
         .build();
 
     let p = make_project();
     cargo(&p, "build")
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] `alternative` index
+[ERROR] failed to download `bar v0.0.1 (registry `alternative`)`
+
+Caused by:
+  unable to get packages from source
+
+Caused by:
+  no token found for `alternative`, please run `cargo login --registry alternative`",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn incorrect_token() {
+    let _registry = RegistryBuilder::new()
+        .alternative()
+        .auth_required()
+        .no_configure_token()
+        .http_index()
+        .build();
+
+    let p = make_project();
+    cargo(&p, "build")
+        .env("CARGO_REGISTRIES_ALTERNATIVE_TOKEN", "incorrect")
         .with_status(101)
         .with_stderr(
             "\
@@ -160,13 +176,37 @@ Caused by:
 }
 
 #[cargo_test]
-fn login() {
-    let server = serve_registry(alt_registry_path(), Some("sekrit".to_string()));
-    RegistryBuilder::new()
-        .alternative(true)
-        .add_tokens(false)
+fn incorrect_token_git() {
+    let _registry = RegistryBuilder::new()
+        .alternative()
         .auth_required()
-        .http(server.url())
+        .no_configure_token()
+        .http_api()
+        .build();
+
+    let p = make_project();
+    cargo(&p, "build")
+        .env("CARGO_REGISTRIES_ALTERNATIVE_TOKEN", "incorrect")
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] `alternative` index
+[DOWNLOADING] crates ...
+[ERROR] failed to download from `http://[..]/dl/bar/0.0.1/download`
+
+Caused by:
+  failed to get 200 response from `http://[..]/dl/bar/0.0.1/download`, got 401",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn login() {
+    let _registry = RegistryBuilder::new()
+        .alternative()
+        .no_configure_token()
+        .auth_required()
+        .http_index()
         .build();
 
     let p = make_project();
@@ -178,43 +218,24 @@ fn login() {
 
 #[cargo_test]
 fn login_existing_token() {
-    let server = serve_registry(alt_registry_path(), Some("sekrit".to_string()));
-    RegistryBuilder::new()
-        .alternative(true)
-        .add_tokens(true)
+    let _registry = RegistryBuilder::new()
+        .alternative()
         .auth_required()
-        .http(server.url())
+        .http_index()
         .build();
 
     let p = make_project();
     cargo(&p, "login --registry alternative")
-        .with_stdout("please paste the token found on https://test-registry-login/me below")
-        .with_stdin("sekrit")
-        .run();
-}
-
-#[cargo_test]
-fn login_server_unavailable() {
-    // Set up a registry with an invalid url.
-    RegistryBuilder::new()
-        .alternative(true)
-        .add_tokens(false)
-        .auth_required()
-        .http(Url::parse("sparse+http://127.0.0.1:0/").unwrap())
-        .build();
-
-    let p = make_project();
-    cargo(&p, "login --registry alternative")
-        .with_stdout("please paste the token for alternative below")
+        .with_stdout("please paste the token found on file://[..]/me below")
         .with_stdin("sekrit")
         .run();
 }
 
 #[cargo_test]
 fn duplicate_index() {
-    RegistryBuilder::new()
-        .alternative(true)
-        .add_tokens(false)
+    let server = RegistryBuilder::new()
+        .alternative()
+        .no_configure_token()
         .auth_required()
         .build();
     let p = make_project();
@@ -223,11 +244,11 @@ fn duplicate_index() {
     cargo(&p, "build")
         .env(
             "CARGO_REGISTRIES_ALTERNATIVE1_INDEX",
-            alt_registry_url().as_str(),
+            server.index_url().as_str(),
         )
         .env(
             "CARGO_REGISTRIES_ALTERNATIVE2_INDEX",
-            alt_registry_url().as_str(),
+            server.index_url().as_str(),
         )
         .with_status(101)
         .with_stderr(

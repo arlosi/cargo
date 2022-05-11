@@ -427,7 +427,7 @@ fn registry(
         .api
         .ok_or_else(|| format_err!("{} does not support API commands", sid))?;
 
-    let token = if token_required {
+    let token = if token_required || cfg.auth_required {
         // Check `is_default_registry` so that the crates.io index can
         // change config.json's "api" value, and this won't affect most
         // people. It will affect those using source replacement, but
@@ -661,34 +661,32 @@ pub fn registry_login(config: &Config, token: Option<&str>, reg: Option<&str>) -
     let opt_index = reg.map(|r| config.get_registry_index(&r)).transpose()?;
     let sid = get_source_id(config, opt_index.as_ref(), reg, false)?;
     let reg_cfg = auth::registry_credential_config(config, &sid)?;
+    let login_url = match registry(config, token, None, reg, false, false) {
+        Ok((registry, _)) => Some(format!("{}/me", registry.host())),
+        Err(e) if e.is::<AuthorizationError>() => e
+            .downcast::<AuthorizationError>()
+            .unwrap()
+            .login_url
+            .map(|u| u.to_string()),
+        Err(e) => return Err(e),
+    };
+
     let token = match token {
         Some(token) => token.to_string(),
         None => {
-            match registry(config, token, None, reg, false, false) {
-                Ok((registry, _)) => drop_println!(
+            if let Some(login_url) = login_url {
+                drop_println!(
                     config,
-                    "please paste the token found on {}/me below",
-                    registry.host()
-                ),
-                Err(e) => {
-                    if let Some(login_url) = e
-                        .downcast_ref::<AuthorizationError>()
-                        .and_then(|e| e.login_url.as_ref())
-                    {
-                        drop_println!(
-                            config,
-                            "please paste the token found on {} below",
-                            login_url
-                        )
-                    } else {
-                        drop_println!(
-                            config,
-                            "please paste the token for {} below",
-                            sid.display_registry_name()
-                        )
-                    }
-                }
-            };
+                    "please paste the token found on {} below",
+                    login_url
+                )
+            } else {
+                drop_println!(
+                    config,
+                    "please paste the token for {} below",
+                    sid.display_registry_name()
+                )
+            }
 
             let mut line = String::new();
             let input = io::stdin();

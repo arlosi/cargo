@@ -215,8 +215,8 @@ pub fn cache_token(config: &Config, sid: &SourceId, token: &str) {
 }
 
 /// Returns the token to use for the given registry.
-/// If a command_line_token is present, it will be returned and
-/// cached for future calls using the same SourceId.
+/// If a `login_url` is provided and a token is not available, the
+/// login_url will be included in the returned error.
 pub fn auth_token(config: &Config, sid: &SourceId, login_url: Option<&Url>) -> CargoResult<String> {
     match auth_token_optional(config, sid)? {
         Some(token) => Ok(token),

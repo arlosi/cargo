@@ -2,7 +2,7 @@
 
 use cargo::util::IntoUrl;
 use cargo_test_support::publish::validate_alt_upload;
-use cargo_test_support::registry::{self, Package};
+use cargo_test_support::registry::{self, Package, RegistryBuilder};
 use cargo_test_support::{basic_manifest, git, paths, project};
 use std::fs;
 
@@ -661,18 +661,8 @@ Caused by:
 
 #[cargo_test]
 fn no_api() {
-    registry::alt_init();
+    let _registry = RegistryBuilder::new().alternative().no_api().build();
     Package::new("bar", "0.0.1").alternative(true).publish();
-    // Configure without `api`.
-    let repo = git2::Repository::open(registry::alt_registry_path()).unwrap();
-    let cfg_path = registry::alt_registry_path().join("config.json");
-    fs::write(
-        cfg_path,
-        format!(r#"{{"dl": "{}"}}"#, registry::alt_dl_url()),
-    )
-    .unwrap();
-    git::add(&repo);
-    git::commit(&repo);
 
     // First check that a dependency works.
     let p = project()
@@ -706,6 +696,11 @@ fn no_api() {
 
     // Check all of the API commands.
     let err = "[ERROR] registry `alternative` does not support API commands";
+
+    p.cargo("login --registry alternative TOKEN")
+        .with_status(101)
+        .with_stderr_contains(&err)
+        .run();
 
     p.cargo("publish --registry alternative")
         .with_status(101)
@@ -1217,8 +1212,6 @@ fn registries_index_relative_url() {
     )
     .unwrap();
 
-    registry::init();
-
     let p = project()
         .file(
             "Cargo.toml",
@@ -1265,8 +1258,6 @@ fn registries_index_relative_path_not_allowed() {
         "#,
     )
     .unwrap();
-
-    registry::init();
 
     let p = project()
         .file(

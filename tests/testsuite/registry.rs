@@ -3,7 +3,7 @@
 use cargo::core::SourceId;
 use cargo_test_support::paths::{self, CargoPathExt};
 use cargo_test_support::registry::{
-    self, registry_path, serve_registry, Dependency, Package, RegistryServer,
+    self, registry_path, Dependency, Package, RegistryBuilder, TestRegistry,
 };
 use cargo_test_support::{basic_manifest, project, Execs, Project};
 use cargo_test_support::{cargo_process, registry::registry_url};
@@ -11,7 +11,6 @@ use cargo_test_support::{git, install::cargo_home, t};
 use cargo_util::paths::remove_dir_all;
 use std::fs::{self, File};
 use std::path::Path;
-use url::Url;
 
 fn cargo_http(p: &Project, s: &str) -> Execs {
     let mut e = p.cargo(s);
@@ -23,28 +22,8 @@ fn cargo_stable(p: &Project, s: &str) -> Execs {
     p.cargo(s)
 }
 
-fn setup_http() -> RegistryServer {
-    let server = serve_registry(registry_path(), None);
-    configure_source_replacement_for_http(&server.url());
-    server
-}
-
-fn configure_source_replacement_for_http(url: &Url) {
-    let root = paths::root();
-    t!(fs::create_dir(&root.join(".cargo")));
-    t!(fs::write(
-        root.join(".cargo/config"),
-        format!(
-            "
-            [source.crates-io]
-            replace-with = 'dummy-registry'
-
-            [source.dummy-registry]
-            registry = '{}'
-        ",
-            url.as_str()
-        )
-    ));
+fn setup_http() -> TestRegistry {
+    RegistryBuilder::new().http_index().build()
 }
 
 #[cargo_test]

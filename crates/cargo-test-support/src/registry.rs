@@ -1,10 +1,10 @@
 use crate::git::repo;
 use crate::paths;
+use cargo_util::paths::append;
 use cargo_util::{registry::make_dep_path, Sha256};
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener};
@@ -35,245 +35,313 @@ pub fn api_url() -> Url {
 /// Gets the path where crates can be downloaded using the web API endpoint. Crates
 /// should be organized as `{name}/{version}/download` to match the web API
 /// endpoint. This is rarely used and must be manually set up.
-pub fn dl_path() -> PathBuf {
+fn dl_path() -> PathBuf {
     generate_path("dl")
 }
-pub fn dl_url() -> Url {
+fn dl_url() -> Url {
     generate_url("dl")
 }
 /// Gets the alternative-registry version of `registry_path`.
-pub fn alt_registry_path() -> PathBuf {
+fn alt_registry_path() -> PathBuf {
     generate_path("alternative-registry")
 }
+/// Gets the alternative-registry version of `registry_url`.
 pub fn alt_registry_url() -> Url {
     generate_url("alternative-registry")
 }
 /// Gets the alternative-registry version of `dl_path`.
 pub fn alt_dl_path() -> PathBuf {
-    generate_path("alt_dl")
-}
-pub fn alt_dl_url() -> String {
-    generate_alt_dl_url("alt_dl")
+    generate_path("alternative-dl")
 }
 /// Gets the alternative-registry version of `api_path`.
 pub fn alt_api_path() -> PathBuf {
-    generate_path("alt_api")
+    generate_path("alternative-api")
 }
-pub fn alt_api_url() -> Url {
-    generate_url("alt_api")
-}
-
-pub fn generate_path(name: &str) -> PathBuf {
+fn generate_path(name: &str) -> PathBuf {
     paths::root().join(name)
 }
-pub fn generate_url(name: &str) -> Url {
+fn generate_url(name: &str) -> Url {
     Url::from_file_path(generate_path(name)).ok().unwrap()
-}
-pub fn generate_alt_dl_url(name: &str) -> String {
-    let base = Url::from_file_path(generate_path(name)).ok().unwrap();
-    format!("{}/{{crate}}/{{version}}/{{crate}}-{{version}}.crate", base)
 }
 
 /// A builder for initializing registries.
 pub struct RegistryBuilder {
-    /// If `true`, adds source replacement for crates.io to a registry on the filesystem.
-    replace_crates_io: bool,
-    /// If `true`, configures a registry named "alternative".
-    alternative: bool,
-    /// If set, sets the API url for the "alternative" registry.
-    /// This defaults to a directory on the filesystem.
-    alt_api_url: Option<String>,
-    /// If `true`, configures `.cargo/credentials` with some tokens.
-    add_tokens: bool,
+    /// If set, configures an alternate registry with the given name.
+    alternative: Option<String>,
+    /// If set, the authorization token for the registry.
+    token: Option<String>,
     /// If set, the registry requires authorization for all operations.
     auth_required: bool,
-    /// If set, the Url of the http server that serves the registry.
-    http: Option<Url>,
+    /// If set, serves the index over http.
+    http_index: bool,
+    /// If set, serves the API over http.
+    http_api: bool,
+    /// If set, config.json includes 'api'
+    api: bool,
+    /// Write the token in the configuration.
+    configure_token: bool,
+    /// Write the registry in configuration.
+    configure_registry: bool,
+    /// API responders.
+    custom_responders: HashMap<&'static str, Box<dyn Send + Fn(&Request) -> Response>>,
+}
+
+pub struct TestRegistry {
+    _server: Option<HttpServerHandle>,
+    index_url: Url,
+    path: PathBuf,
+    api_url: Url,
+    dl_url: Url,
+    token: Option<String>,
+}
+
+impl TestRegistry {
+    pub fn index_url(&self) -> &Url {
+        &self.index_url
+    }
+
+    pub fn api_url(&self) -> &Url {
+        &self.api_url
+    }
+
+    pub fn token(&self) -> &str {
+        self.token
+            .as_deref()
+            .expect("registry was not configured with a token")
+    }
 }
 
 impl RegistryBuilder {
+    #[must_use]
     pub fn new() -> RegistryBuilder {
         RegistryBuilder {
-            replace_crates_io: true,
-            alternative: false,
-            alt_api_url: None,
-            add_tokens: true,
+            alternative: None,
+            token: Some("api-token".to_string()),
             auth_required: false,
-            http: None,
+            http_api: false,
+            http_index: false,
+            api: true,
+            configure_registry: true,
+            configure_token: true,
+            custom_responders: HashMap::new(),
         }
     }
 
-    /// Sets whether or not to replace crates.io with a registry on the filesystem.
-    /// Default is `true`.
-    pub fn replace_crates_io(&mut self, replace: bool) -> &mut Self {
-        self.replace_crates_io = replace;
+    /// Adds a custom HTTP response for a specific url
+    #[must_use]
+    pub fn add_responder<R: 'static + Send + Fn(&Request) -> Response>(
+        mut self,
+        url: &'static str,
+        responder: R,
+    ) -> Self {
+        self.custom_responders.insert(url, Box::new(responder));
         self
     }
 
-    /// Sets whether or not to initialize an alternative registry named "alternative".
-    /// Default is `false`.
-    pub fn alternative(&mut self, alt: bool) -> &mut Self {
-        self.alternative = alt;
+    /// Sets whether or not to initialize as an alternative registry.
+    #[must_use]
+    pub fn alternative_named(mut self, alt: &str) -> Self {
+        self.alternative = Some(alt.to_string());
         self
     }
 
-    /// Sets the API url for the "alternative" registry.
-    /// Defaults to a path on the filesystem ([`alt_api_path`]).
-    pub fn alternative_api_url(&mut self, url: &str) -> &mut Self {
-        self.alternative = true;
-        self.alt_api_url = Some(url.to_string());
+    /// Sets whether or not to initialize as an alternative registry.
+    #[must_use]
+    pub fn alternative(self) -> Self {
+        self.alternative_named("alternative")
+    }
+
+    /// Prevents placing a token in the configuration
+    #[must_use]
+    pub fn no_configure_token(mut self) -> Self {
+        self.configure_token = false;
         self
     }
 
-    /// Sets whether or not to initialize `.cargo/credentials` with some tokens.
-    /// Defaults to `true`.
-    pub fn add_tokens(&mut self, add: bool) -> &mut Self {
-        self.add_tokens = add;
+    /// Prevents adding the registry to the configuration.
+    #[must_use]
+    pub fn no_configure_registry(mut self) -> Self {
+        self.configure_registry = false;
+        self
+    }
+
+    /// Sets the token value
+    #[must_use]
+    pub fn token(mut self, token: &str) -> Self {
+        self.token = Some(token.to_string());
         self
     }
 
     /// Sets this registry to require the authentication token for
     /// all operations.
-    pub fn auth_required(&mut self) -> &mut Self {
+    #[must_use]
+    pub fn auth_required(mut self) -> Self {
         self.auth_required = true;
         self
     }
 
-    /// Sets the http url
-    pub fn http(&mut self, http: Url) -> &mut Self {
-        self.http = Some(http);
+    /// Operate the index over http
+    #[must_use]
+    pub fn http_index(mut self) -> Self {
+        self.http_index = true;
         self
     }
 
-    /// Initializes the registries.
-    pub fn build(&self) {
+    /// Operate the api over http
+    #[must_use]
+    pub fn http_api(mut self) -> Self {
+        self.http_api = true;
+        self
+    }
+
+    /// The registry has no api.
+    #[must_use]
+    pub fn no_api(mut self) -> Self {
+        self.api = false;
+        self
+    }
+
+    /// Initializes the registry.
+    #[must_use]
+    pub fn build(self) -> TestRegistry {
         let config_path = paths::home().join(".cargo/config");
-        if config_path.exists() {
-            panic!(
-                "{} already exists, the registry may only be initialized once, \
-                and must be done before the config file is created",
-                config_path.display()
-            );
-        }
         t!(fs::create_dir_all(config_path.parent().unwrap()));
-        let mut config = String::new();
-        if self.replace_crates_io {
-            write!(
-                &mut config,
-                "
+        let (registry_path, index_url, api_url, dl_url, dl_path, api_path) =
+            if let Some(alternative) = &self.alternative {
+                (
+                    generate_path(&format!("{alternative}-registry")),
+                    generate_url(&format!("{alternative}-registry")),
+                    generate_url(&format!("{alternative}-api")),
+                    generate_url(&format!("{alternative}-dl")),
+                    generate_path(&format!("{alternative}-dl")),
+                    generate_path(&format!("{alternative}-api")),
+                )
+            } else {
+                (
+                    registry_path(),
+                    registry_url(),
+                    api_url(),
+                    dl_url(),
+                    dl_path(),
+                    api_path(),
+                )
+            };
+
+        let (server, index_url, api_url, dl_url) = if !self.http_index && !self.http_api {
+            // No need to start the HTTP server.
+            (None, index_url, api_url, dl_url)
+        } else {
+            let server = HttpServer::new(
+                registry_path.clone(),
+                dl_path,
+                self.token.clone(),
+                self.auth_required,
+                self.custom_responders,
+            );
+            let index_url = if self.http_index {
+                server.index_url()
+            } else {
+                index_url
+            };
+            let api_url = if self.http_api {
+                server.api_url()
+            } else {
+                api_url
+            };
+            let dl_url = server.dl_url();
+            (Some(server), index_url, api_url, dl_url)
+        };
+
+        let registry = TestRegistry {
+            api_url,
+            index_url,
+            _server: server,
+            dl_url,
+            path: registry_path,
+            token: self.token,
+        };
+
+        if self.configure_registry {
+            if let Some(alternative) = &self.alternative {
+                append(
+                    &config_path,
+                    format!(
+                        "
+                    [registries.{alternative}]
+                    index = '{}'",
+                        registry.index_url
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            } else {
+                append(
+                    &config_path,
+                    format!(
+                        "
                     [source.crates-io]
                     replace-with = 'dummy-registry'
 
                     [source.dummy-registry]
-                    registry = '{}'
-                ",
-                registry_url()
-            )
-            .unwrap();
+                    registry = '{}'",
+                        registry.index_url
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            }
         }
-        if self.alternative {
-            let url = if let Some(http) = &self.http {
-                http.clone()
-            } else {
-                alt_registry_url()
-            };
-            write!(
-                config,
-                "
-                    [registries.alternative]
-                    index = '{}'
-                ",
-                url
-            )
-            .unwrap();
-        }
-        t!(fs::write(&config_path, config));
 
-        if self.add_tokens {
+        if self.configure_token {
+            let token = registry.token.as_deref().unwrap();
             let credentials = paths::home().join(".cargo/credentials");
-            t!(fs::write(
-                &credentials,
-                r#"
-                    [registry]
-                    token = "api-token"
-
-                    [registries.alternative]
-                    token = "api-token"
+            if let Some(alternative) = &self.alternative {
+                append(
+                    &credentials,
+                    format!(
+                        r#"
+                    [registries.{alternative}]
+                    token = "{token}"
                 "#
-            ));
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            } else {
+                append(
+                    &credentials,
+                    format!(
+                        r#"
+                    [registry]
+                    token = "{token}"
+                "#
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            }
         }
 
-        if self.replace_crates_io {
-            init_registry(
-                registry_path(),
-                dl_url().into(),
-                api_url(),
-                api_path(),
-                self.auth_required,
-            );
-        }
-
-        if self.alternative {
-            init_registry(
-                alt_registry_path(),
-                alt_dl_url(),
-                self.alt_api_url
-                    .as_ref()
-                    .map_or_else(alt_api_url, |url| Url::parse(url).expect("valid url")),
-                alt_api_path(),
-                self.auth_required,
-            );
-        }
-    }
-
-    /// Initializes the registries, and sets up an HTTP server for the
-    /// "alternative" registry.
-    ///
-    /// The given callback takes a `Vec` of headers when a request comes in.
-    /// The first entry should be the HTTP command, such as
-    /// `PUT /api/v1/crates/new HTTP/1.1`.
-    ///
-    /// The callback should return the HTTP code for the response, and the
-    /// response body.
-    ///
-    /// This method returns a `JoinHandle` which you should call
-    /// `.join().unwrap()` on before exiting the test.
-    pub fn build_api_server<'a>(
-        &mut self,
-        handler: &'static (dyn (Fn(Vec<String>) -> (u32, &'a dyn AsRef<[u8]>)) + Sync),
-    ) -> thread::JoinHandle<()> {
-        let server = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = server.local_addr().unwrap();
-        let api_url = format!("http://{}", addr);
-
-        self.replace_crates_io(false)
-            .alternative_api_url(&api_url)
-            .build();
-
-        let t = thread::spawn(move || {
-            let mut conn = BufReader::new(server.accept().unwrap().0);
-            let headers: Vec<_> = (&mut conn)
-                .lines()
-                .map(|s| s.unwrap())
-                .take_while(|s| s.len() > 2)
-                .map(|s| s.trim().to_string())
-                .collect();
-            let (code, response) = handler(headers);
-            let response = response.as_ref();
-            let stream = conn.get_mut();
-            write!(
-                stream,
-                "HTTP/1.1 {}\r\n\
-                  Content-Length: {}\r\n\
-                  \r\n",
-                code,
-                response.len()
+        let auth = if self.auth_required {
+            r#","auth-required":true"#
+        } else {
+            ""
+        };
+        let api = if self.api {
+            format!(r#","api":"{}""#, registry.api_url)
+        } else {
+            String::new()
+        };
+        // Initialize a new registry.
+        repo(&registry.path)
+            .file(
+                "config.json",
+                &format!(r#"{{"dl":"{}"{api}{auth}}}"#, registry.dl_url),
             )
-            .unwrap();
-            stream.write_all(response).unwrap();
-        });
+            .build();
+        fs::create_dir_all(api_path.join("api/v1/crates")).unwrap();
 
-        t
+        registry
     }
 }
 
@@ -388,72 +456,121 @@ const DEFAULT_MODE: u32 = 0o644;
 
 /// Initializes the on-disk registry and sets up the config so that crates.io
 /// is replaced with the one on disk.
-pub fn init() {
-    let config = paths::home().join(".cargo/config");
-    if config.exists() {
-        return;
-    }
-    RegistryBuilder::new().build();
+pub fn init() -> TestRegistry {
+    RegistryBuilder::new().build()
 }
 
-/// Variant of `init` that initializes the "alternative" registry.
-pub fn alt_init() {
-    RegistryBuilder::new().alternative(true).build();
+/// Variant of `init` that initializes the "alternative" registry and crates.io
+/// replacement.
+pub fn alt_init() -> TestRegistry {
+    init();
+    RegistryBuilder::new().alternative().build()
 }
 
-pub struct RegistryServer {
+pub struct HttpServerHandle {
     done: Arc<AtomicBool>,
-    server: Option<thread::JoinHandle<()>>,
+    join_handle: Option<thread::JoinHandle<()>>,
     addr: SocketAddr,
 }
 
-impl RegistryServer {
-    pub fn url(&self) -> Url {
-        Url::parse(&format!("sparse+http://{}/", self.addr.to_string())).unwrap()
+impl HttpServerHandle {
+    pub fn index_url(&self) -> Url {
+        Url::parse(&format!("sparse+http://{}/index/", self.addr.to_string())).unwrap()
+    }
+
+    pub fn api_url(&self) -> Url {
+        Url::parse(&format!("http://{}/", self.addr.to_string())).unwrap()
+    }
+
+    pub fn dl_url(&self) -> Url {
+        Url::parse(&format!("http://{}/dl", self.addr.to_string())).unwrap()
     }
 }
 
-impl Drop for RegistryServer {
+impl Drop for HttpServerHandle {
     fn drop(&mut self) {
         self.done.store(true, Ordering::SeqCst);
-        // NOTE: we can't actually await the server since it's blocked in accept()
-        let _ = self.server.take();
+        let _ = self.join_handle.take();
     }
 }
 
-#[must_use]
-pub fn serve_registry(registry_path: PathBuf, token: Option<String>) -> RegistryServer {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let done = Arc::new(AtomicBool::new(false));
-    let done2 = done.clone();
+/// Request to the test http server
+#[derive(Debug)]
+pub struct Request {
+    pub url: Url,
+    pub method: String,
+    pub authorization: Option<String>,
+    pub if_modified_since: Option<String>,
+    pub if_none_match: Option<String>,
+}
 
-    let t = thread::spawn(move || {
+/// Response from the test http server
+pub struct Response {
+    pub code: u32,
+    pub headers: Vec<String>,
+    pub body: Vec<u8>,
+}
+
+struct HttpServer {
+    listener: TcpListener,
+    done: Arc<AtomicBool>,
+    registry_path: PathBuf,
+    dl_path: PathBuf,
+    token: Option<String>,
+    auth_required: bool,
+    custom_responders: HashMap<&'static str, Box<dyn Send + Fn(&Request) -> Response>>,
+}
+
+impl HttpServer {
+    pub fn new(
+        registry_path: PathBuf,
+        dl_path: PathBuf,
+        token: Option<String>,
+        auth_required: bool,
+        api_responders: HashMap<&'static str, Box<dyn Send + Fn(&Request) -> Response>>,
+    ) -> HttpServerHandle {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let server = HttpServer {
+            listener,
+            done: done.clone(),
+            registry_path,
+            dl_path,
+            token,
+            auth_required,
+            custom_responders: api_responders,
+        };
+        let t = thread::spawn(move || server.start());
+        HttpServerHandle {
+            addr,
+            join_handle: Some(t),
+            done,
+        }
+    }
+
+    fn start(&self) {
         let mut line = String::new();
-        'server: while !done2.load(Ordering::SeqCst) {
-            let (socket, _) = listener.accept().unwrap();
-            // Let's implement a very naive static file HTTP server.
+        'server: while !self.done.load(Ordering::SeqCst) {
+            let (socket, _) = self.listener.accept().unwrap();
             let mut buf = BufReader::new(socket);
-
-            // First, the request line:
-            // GET /path HTTPVERSION
             line.clear();
             if buf.read_line(&mut line).unwrap() == 0 {
                 // Connection terminated.
                 continue;
             }
-
-            assert!(line.starts_with("GET "), "got non-GET request: {}", line);
-            let path = PathBuf::from(
-                line.split_whitespace()
-                    .skip(1)
-                    .next()
-                    .unwrap()
-                    .trim_start_matches('/'),
+            // Read the "GET path HTTP/1.1" line.
+            let mut parts = line.split_ascii_whitespace();
+            let method = parts.next().unwrap().to_ascii_lowercase();
+            let addr = self.listener.local_addr().unwrap();
+            let url = format!(
+                "http://{}/{}",
+                addr,
+                parts.next().unwrap().trim_start_matches('/')
             );
+            let url = Url::parse(&url).unwrap();
 
-            let file = registry_path.join(path);
-            // Grab some other headers we may care about.
+            // Grab headers we care about.
             let mut if_modified_since = None;
             let mut if_none_match = None;
             let mut authorization = None;
@@ -462,17 +579,14 @@ pub fn serve_registry(registry_path: PathBuf, token: Option<String>) -> Registry
                 if buf.read_line(&mut line).unwrap() == 0 {
                     continue 'server;
                 }
-
                 if line == "\r\n" {
                     // End of headers.
                     line.clear();
                     break;
                 }
-
                 let (name, value) = line.split_once(':').unwrap();
                 let name = name.trim().to_ascii_lowercase();
                 let value = value.trim().to_string();
-
                 match name.as_str() {
                     "if-modified-since" => if_modified_since = Some(value),
                     "if-none-match" => if_none_match = Some(value),
@@ -480,113 +594,175 @@ pub fn serve_registry(registry_path: PathBuf, token: Option<String>) -> Registry
                     _ => {}
                 }
             }
+            let req = Request {
+                authorization,
+                if_modified_since,
+                if_none_match,
+                method,
+                url,
+            };
+            println!("req: {:#?}", req);
+            let response = self.route(&req);
+            let buf = buf.get_mut();
+            write!(buf, "HTTP/1.1 {}\r\n", response.code).unwrap();
+            write!(buf, "Content-Length: {}\r\n", response.body.len()).unwrap();
+            for header in response.headers {
+                write!(buf, "{}\r\n", header).unwrap();
+            }
+            write!(buf, "\r\n").unwrap();
+            buf.write_all(&response.body).unwrap();
+            buf.flush().unwrap();
+        }
+    }
 
-            if token.is_some() && token != authorization {
-                buf.get_mut()
-                    .write_all(b"HTTP/1.1 401 Unauthorized\r\n")
-                    .unwrap();
-                buf.get_mut()
-                    .write_all(
-                        b"WWW-Authenticate: Cargo login_url=https://test-registry-login/me\r\n\r\n",
-                    )
-                    .unwrap();
-                buf.get_mut()
-                    .write_all(b"Unauthorized message from server.")
-                    .unwrap();
-            } else if !file.exists() {
-                buf.get_mut()
-                    .write_all(b"HTTP/1.1 404 Not Found\r\n\r\n")
-                    .unwrap();
-            } else {
-                // Now grab info about the file.
-                let data = fs::read(&file).unwrap();
-                let etag = Sha256::new().update(&data).finish_hex();
-                let last_modified = format!("{:?}", file.metadata().unwrap().modified().unwrap());
+    /// Route the request
+    fn route(&self, req: &Request) -> Response {
+        let path = req.url.path();
 
-                // Start to construct our response:
-                let mut any_match = false;
-                let mut all_match = true;
-                if let Some(expected) = if_none_match {
-                    if etag != expected {
-                        all_match = false;
-                    } else {
-                        any_match = true;
-                    }
-                }
-                if let Some(expected) = if_modified_since {
-                    // NOTE: Equality comparison is good enough for tests.
-                    if last_modified != expected {
-                        all_match = false;
-                    } else {
-                        any_match = true;
-                    }
-                }
+        // Check authorization
+        let valid_token = self.token.is_some() && self.token == req.authorization;
+        let anonymous = req.method == "get"
+            && (path.starts_with("/dl/")
+                || path.starts_with("/index/")
+                || path == "/api/v1/crates");
+        if !valid_token && (!anonymous || self.auth_required) {
+            return self.unauthorized(req);
+        }
 
-                // Write out the main response line.
-                if any_match && all_match {
-                    buf.get_mut()
-                        .write_all(b"HTTP/1.1 304 Not Modified\r\n\r\n")
-                        .unwrap();
+        // Check for custom responder
+        if let Some(responder) = self.custom_responders.get(req.url.path()) {
+            return responder(&req);
+        }
+        match (req.method.as_str(), req.url.path()) {
+            ("get", path) if path.starts_with("/index/") => self.index(&req),
+            ("get", path) if path.starts_with("/dl/") => self.dl(&req),
+            ("put", "/api/v1/crates/new") => self.ok(&req),
+            ("delete", path) if path.starts_with("/api/v1/crates/") && path.ends_with("/yank") => {
+                self.ok(&req)
+            }
+            ("put", path) if path.starts_with("/api/v1/crates/") && path.ends_with("/unyank") => {
+                self.ok(&req)
+            }
+            ("get", path) if path.starts_with("/api/v1/crates/") && path.ends_with("/owners") => {
+                self.ok(&req)
+            }
+            ("put", path) if path.starts_with("/api/v1/crates/") && path.ends_with("/owners") => {
+                self.ok(&req)
+            }
+            ("delete", path)
+                if path.starts_with("/api/v1/crates/") && path.ends_with("/owners") =>
+            {
+                self.ok(&req)
+            }
+            _ => self.not_found(&req),
+        }
+    }
+
+    /// Unauthorized response
+    fn unauthorized(&self, _req: &Request) -> Response {
+        Response {
+            code: 401,
+            headers: vec![
+                r#"WWW-Authenticate: Cargo login_url="https://test-registry-login/me""#.to_string(),
+            ],
+            body: b"Unauthorized message from server.".to_vec(),
+        }
+    }
+
+    /// Not found response
+    fn not_found(&self, _req: &Request) -> Response {
+        Response {
+            code: 404,
+            headers: vec![],
+            body: b"not found".to_vec(),
+        }
+    }
+
+    /// Respond OK without doing anything
+    fn ok(&self, _req: &Request) -> Response {
+        Response {
+            code: 200,
+            headers: vec![],
+            body: br#"{"ok": true, "msg": "completed!"}"#.to_vec(),
+        }
+    }
+
+    /// Serve the download endpoint
+    fn dl(&self, req: &Request) -> Response {
+        let file = self
+            .dl_path
+            .join(req.url.path().strip_prefix("/dl/").unwrap());
+        println!("{}", file.display());
+        if !file.exists() {
+            return self.not_found(req);
+        }
+        return Response {
+            body: fs::read(&file).unwrap(),
+            code: 200,
+            headers: vec![],
+        };
+    }
+
+    /// Serve the registry index
+    fn index(&self, req: &Request) -> Response {
+        let file = self
+            .registry_path
+            .join(req.url.path().strip_prefix("/index/").unwrap());
+        if !file.exists() {
+            return self.not_found(req);
+        } else {
+            // Now grab info about the file.
+            let data = fs::read(&file).unwrap();
+            let etag = Sha256::new().update(&data).finish_hex();
+            let last_modified = format!("{:?}", file.metadata().unwrap().modified().unwrap());
+
+            // Start to construct our response:
+            let mut any_match = false;
+            let mut all_match = true;
+            if let Some(expected) = &req.if_none_match {
+                if &etag != expected {
+                    all_match = false;
                 } else {
-                    buf.get_mut().write_all(b"HTTP/1.1 200 OK\r\n").unwrap();
-
-                    // TODO: Support 451 for crate index deletions.
-                    // Write out other headers.
-                    buf.get_mut()
-                        .write_all(format!("Content-Length: {}\r\n", data.len()).as_bytes())
-                        .unwrap();
-                    buf.get_mut()
-                        .write_all(format!("ETag: \"{}\"\r\n", etag).as_bytes())
-                        .unwrap();
-                    buf.get_mut()
-                        .write_all(format!("Last-Modified: {}\r\n", last_modified).as_bytes())
-                        .unwrap();
-
-                    // And finally, write out the body.
-                    buf.get_mut().write_all(b"\r\n").unwrap();
-                    buf.get_mut().write_all(&data).unwrap();
+                    any_match = true;
+                }
+            }
+            if let Some(expected) = &req.if_modified_since {
+                // NOTE: Equality comparison is good enough for tests.
+                if &last_modified != expected {
+                    all_match = false;
+                } else {
+                    any_match = true;
                 }
             }
 
-            buf.get_mut().flush().unwrap();
+            if any_match && all_match {
+                return Response {
+                    body: Vec::new(),
+                    code: 304,
+                    headers: vec![],
+                };
+            } else {
+                return Response {
+                    body: data,
+                    code: 200,
+                    headers: vec![
+                        format!("ETag: \"{}\"", etag),
+                        format!("Last-Modified: {}", last_modified),
+                    ],
+                };
+            }
         }
-    });
-
-    RegistryServer {
-        addr,
-        server: Some(t),
-        done,
     }
-}
-
-/// Creates a new on-disk registry.
-pub fn init_registry(
-    registry_path: PathBuf,
-    dl_url: String,
-    api_url: Url,
-    api_path: PathBuf,
-    auth_required: bool,
-) {
-    let auth = if auth_required {
-        ", \"auth-required\":true"
-    } else {
-        ""
-    };
-    // Initialize a new registry.
-    repo(&registry_path)
-        .file(
-            "config.json",
-            &format!(r#"{{"dl":"{}","api":"{}"{}}}"#, dl_url, api_url, auth),
-        )
-        .build();
-    fs::create_dir_all(api_path.join("api/v1/crates")).unwrap();
 }
 
 impl Package {
     /// Creates a new package builder.
     /// Call `publish()` to finalize and build the package.
     pub fn new(name: &str, vers: &str) -> Package {
-        init();
+        let config = paths::home().join(".cargo/config");
+        if !config.exists() {
+            init();
+        }
         Package {
             name: name.to_string(),
             vers: vers.to_string(),
@@ -992,7 +1168,7 @@ impl Package {
             alt_dl_path()
                 .join(&self.name)
                 .join(&self.vers)
-                .join(&format!("{}-{}.crate", self.name, self.vers))
+                .join("download")
         } else {
             dl_path().join(&self.name).join(&self.vers).join("download")
         }

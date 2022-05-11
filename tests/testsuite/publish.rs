@@ -2,7 +2,7 @@
 
 use cargo_test_support::git::{self, repo};
 use cargo_test_support::paths;
-use cargo_test_support::registry::{self, registry_url, Package};
+use cargo_test_support::registry::{self, registry_url, Package, Response};
 use cargo_test_support::{basic_manifest, no_such_file_err_msg, project, publish};
 use std::fs;
 
@@ -1439,9 +1439,15 @@ Caused by:
 #[cargo_test]
 fn api_error_json() {
     // Registry returns an API error.
-    let t = registry::RegistryBuilder::new().build_api_server(&|_headers| {
-        (403, &r#"{"errors": [{"detail": "you must be logged in"}]}"#)
-    });
+    let _registry = registry::RegistryBuilder::new()
+        .alternative()
+        .http_api()
+        .add_responder("/api/v1/crates/new", |_| Response {
+            body: br#"{"errors": [{"detail": "you must be logged in"}]}"#.to_vec(),
+            code: 403,
+            headers: vec![],
+        })
+        .build();
 
     let p = project()
         .file(
@@ -1475,19 +1481,20 @@ Caused by:
 ",
         )
         .run();
-
-    t.join().unwrap();
 }
 
 #[cargo_test]
 fn api_error_200() {
     // Registry returns an API error with a 200 status code.
-    let t = registry::RegistryBuilder::new().build_api_server(&|_headers| {
-        (
-            200,
-            &r#"{"errors": [{"detail": "max upload size is 123"}]}"#,
-        )
-    });
+    let _registry = registry::RegistryBuilder::new()
+        .alternative()
+        .http_api()
+        .add_responder("/api/v1/crates/new", |_| Response {
+            body: br#"{"errors": [{"detail": "max upload size is 123"}]}"#.to_vec(),
+            code: 200,
+            headers: vec![],
+        })
+        .build();
 
     let p = project()
         .file(
@@ -1521,14 +1528,20 @@ Caused by:
 ",
         )
         .run();
-
-    t.join().unwrap();
 }
 
 #[cargo_test]
 fn api_error_code() {
     // Registry returns an error code without a JSON message.
-    let t = registry::RegistryBuilder::new().build_api_server(&|_headers| (400, &"go away"));
+    let _registry = registry::RegistryBuilder::new()
+        .alternative()
+        .http_api()
+        .add_responder("/api/v1/crates/new", |_| Response {
+            body: br#"go away"#.to_vec(),
+            code: 400,
+            headers: vec![],
+        })
+        .build();
 
     let p = project()
         .file(
@@ -1568,15 +1581,18 @@ Caused by:
 ",
         )
         .run();
-
-    t.join().unwrap();
 }
 
 #[cargo_test]
 fn api_curl_error() {
     // Registry has a network error.
-    let t = registry::RegistryBuilder::new().build_api_server(&|_headers| panic!("broke!"));
-
+    let _registry = registry::RegistryBuilder::new()
+        .alternative()
+        .http_api()
+        .add_responder("/api/v1/crates/new", |_| {
+            panic!("broke");
+        })
+        .build();
     let p = project()
         .file(
             "Cargo.toml",
@@ -1614,15 +1630,20 @@ Caused by:
 ",
         )
         .run();
-
-    let e = t.join().unwrap_err();
-    assert_eq!(*e.downcast::<&str>().unwrap(), "broke!");
 }
 
 #[cargo_test]
 fn api_other_error() {
     // Registry returns an invalid response.
-    let t = registry::RegistryBuilder::new().build_api_server(&|_headers| (200, b"\xff"));
+    let _registry = registry::RegistryBuilder::new()
+        .alternative()
+        .http_api()
+        .add_responder("/api/v1/crates/new", |_| Response {
+            body: b"\xff".to_vec(),
+            code: 200,
+            headers: vec![],
+        })
+        .build();
 
     let p = project()
         .file(
@@ -1659,8 +1680,6 @@ Caused by:
 ",
         )
         .run();
-
-    t.join().unwrap();
 }
 
 #[cargo_test]

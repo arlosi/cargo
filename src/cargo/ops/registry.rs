@@ -945,11 +945,14 @@ fn get_source_id(config: &Config, index: Option<&str>, reg: Option<&str>) -> Car
     match (reg, index) {
         (Some(r), _) => SourceId::alt_registry(config, r),
         (_, Some(i)) => SourceId::for_registry(&i.into_url()?),
-        _ => {
+        (None, None) if std::env::var_os("__CARGO_TEST_FORCE_CRATESIO_REPLACEMENT").is_some() => {
             let map = SourceConfigMap::new(config)?;
             let src = map.load(SourceId::crates_io(config)?, &HashSet::new())?;
-            Ok(src.replaced_source_id())
+            let replacement = src.replaced_source_id();
+            assert!(replacement != src.source_id(), "cargo tests must configure a source replacement for crates-io.");
+            Ok(replacement)
         }
+        (None, None) => SourceId::crates_io(config)
     }
 }
 

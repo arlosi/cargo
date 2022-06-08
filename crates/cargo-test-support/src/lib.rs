@@ -1202,6 +1202,8 @@ pub trait TestEnv: Sized {
             // should hopefully not surprise us as we add cargo features over time and
             // cargo rides the trains.
             .env("__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS", "stable")
+            // Allow (and require) that crates-io is replaced for registry API operations.
+            .env("__CARGO_TEST_FORCE_CRATESIO_REPLACEMENT", "1")
             // For now disable incremental by default as support hasn't ridden to the
             // stable channel yet. Once incremental support hits the stable compiler we
             // can switch this to one and then fix the tests.

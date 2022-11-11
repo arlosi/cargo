@@ -344,6 +344,9 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
                 "cache did not contain previously downloaded file {}",
                 path.display()
             );
+            // We have no cached copy of this file, and we already downloaded it,
+            // so it must have been a not found response.
+            return Poll::Ready(Ok(LoadResponse::NotFound));
         }
 
         if let Some(result) = self.downloads.results.remove(path) {

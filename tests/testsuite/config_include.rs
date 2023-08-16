@@ -76,7 +76,7 @@ fn works_with_cli() {
             "\
 [DIRTY] foo v0.0.1 ([..]): the rustflags changed
 [CHECKING] foo v0.0.1 [..]
-[RUNNING] `rustc [..]-W unsafe-code -W unused`
+[RUNNING] `rustc [..]-W unused -W unsafe-code`
 [FINISHED] [..]
 ",
         )

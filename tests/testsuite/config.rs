@@ -481,7 +481,7 @@ c = ['c']
     );
     assert_eq!(
         config.get::<VSOB>("c").unwrap(),
-        VSOB::VecString(vec!["c".to_string(), "d".to_string()])
+        VSOB::VecString(vec!["d".to_string(), "c".to_string()])
     );
     assert_eq!(config.get::<VSOB>("envb").unwrap(), VSOB::Bool(false));
     assert_eq!(
@@ -508,11 +508,11 @@ Caused by:
         .build();
     assert_eq!(
         config.get::<VSOB>("b").unwrap(),
-        VSOB::VecString(vec!["b".to_string(), "d".to_string(), "e".to_string()])
+        VSOB::VecString(vec!["d".to_string(), "e".to_string(), "b".to_string()])
     );
     assert_eq!(
         config.get::<VSOB>("c").unwrap(),
-        VSOB::VecString(vec!["c".to_string(), "f".to_string(), "g".to_string()])
+        VSOB::VecString(vec!["f".to_string(), "g".to_string(), "c".to_string()])
     );
 
     // config-cli
@@ -540,19 +540,19 @@ expected boolean, but found array",
     assert_eq!(
         config.get::<VSOB>("b").unwrap(),
         VSOB::VecString(vec![
-            "b".to_string(),
             "clib".to_string(),
             "env1".to_string(),
-            "env2".to_string()
+            "env2".to_string(),
+            "b".to_string(),
         ])
     );
     assert_eq!(
         config.get::<VSOB>("c").unwrap(),
         VSOB::VecString(vec![
-            "c".to_string(),
             "clic".to_string(),
             "e1".to_string(),
-            "e2".to_string()
+            "e2".to_string(),
+            "c".to_string(),
         ])
     );
 }
@@ -780,7 +780,7 @@ expected a list, but found a integer for `l3` in [..]/.cargo/config",
     );
     assert_eq!(
         config.get::<L>("l4").unwrap(),
-        vec!["one", "two", "three", "four"]
+        vec!["three", "four", "one", "two"]
     );
     assert_eq!(config.get::<L>("l5").unwrap(), vec!["a"]);
     assert_eq!(config.get::<L>("env-empty").unwrap(), vec![] as Vec<String>);
@@ -814,10 +814,10 @@ expected `]`
             .get::<(String, String, String, String)>("l4")
             .unwrap(),
         (
-            "one".to_string(),
-            "two".to_string(),
             "three".to_string(),
-            "four".to_string()
+            "four".to_string(),
+            "one".to_string(),
+            "two".to_string()
         )
     );
     assert_eq!(config.get::<(String,)>("l5").unwrap(), ("a".to_string(),));
@@ -845,7 +845,7 @@ expected `]`
     assert_eq!(
         config.get::<S>("nested2").unwrap(),
         S {
-            l: Some(vec!["y".to_string(), "z".to_string()]),
+            l: Some(vec!["z".to_string(), "y".to_string()]),
         }
     );
     assert_eq!(
@@ -1582,17 +1582,17 @@ known-hosts = [
         .as_ref()
         .unwrap();
     assert_eq!(kh.len(), 4);
-    assert_eq!(kh[0].val, "example.org ...");
-    assert_eq!(kh[0].definition, Definition::Path(foo_path.clone()));
-    assert_eq!(kh[1].val, "example.com ...");
-    assert_eq!(kh[1].definition, Definition::Path(root_path.clone()));
-    assert_eq!(kh[2].val, "example.net ...");
-    assert_eq!(kh[2].definition, Definition::Path(root_path.clone()));
-    assert_eq!(kh[3].val, "env-example");
+    assert_eq!(kh[0].val, "env-example");
     assert_eq!(
-        kh[3].definition,
+        kh[0].definition,
         Definition::Environment("CARGO_NET_SSH_KNOWN_HOSTS".to_string())
     );
+    assert_eq!(kh[1].val, "example.org ...");
+    assert_eq!(kh[1].definition, Definition::Path(foo_path.clone()));
+    assert_eq!(kh[2].val, "example.com ...");
+    assert_eq!(kh[2].definition, Definition::Path(root_path.clone()));
+    assert_eq!(kh[3].val, "example.net ...");
+    assert_eq!(kh[3].definition, Definition::Path(root_path.clone()));
 }
 
 #[cargo_test]

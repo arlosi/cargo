@@ -135,7 +135,7 @@ fn merges_array() {
         .build();
     assert_eq!(
         config.get::<Vec<String>>("build.rustflags").unwrap(),
-        ["--file", "--cli"]
+        ["--cli", "--file"]
     );
 
     // With normal env.
@@ -143,11 +143,10 @@ fn merges_array() {
         .env("CARGO_BUILD_RUSTFLAGS", "--env1 --env2")
         .config_arg("build.rustflags = ['--cli']")
         .build();
-    // The order of cli/env is a little questionable here, but would require
-    // much more complex merging logic.
+
     assert_eq!(
         config.get::<Vec<String>>("build.rustflags").unwrap(),
-        ["--file", "--cli", "--env1", "--env2"]
+        ["--cli", "--env1", "--env2", "--file"]
     );
 
     // With advanced-env.
@@ -158,7 +157,7 @@ fn merges_array() {
         .build();
     assert_eq!(
         config.get::<Vec<String>>("build.rustflags").unwrap(),
-        ["--file", "--cli", "--env"]
+        ["--cli", "--env", "--file"]
     );
 
     // Merges multiple instances.
@@ -168,7 +167,7 @@ fn merges_array() {
         .build();
     assert_eq!(
         config.get::<Vec<String>>("build.rustflags").unwrap(),
-        ["--file", "--one", "--two"]
+        ["--two", "--one", "--file"]
     );
 }
 
@@ -189,7 +188,7 @@ fn string_list_array() {
             .get::<cargo::util::config::StringList>("build.rustflags")
             .unwrap()
             .as_slice(),
-        ["--file", "--cli"]
+        ["--cli", "--file"]
     );
 
     // With normal env.
@@ -202,7 +201,7 @@ fn string_list_array() {
             .get::<cargo::util::config::StringList>("build.rustflags")
             .unwrap()
             .as_slice(),
-        ["--file", "--cli", "--env1", "--env2"]
+        ["--cli", "--env1", "--env2", "--file"]
     );
 
     // With advanced-env.
@@ -216,7 +215,7 @@ fn string_list_array() {
             .get::<cargo::util::config::StringList>("build.rustflags")
             .unwrap()
             .as_slice(),
-        ["--file", "--cli", "--env"]
+        ["--cli", "--env", "--file"]
     );
 }
 
@@ -278,10 +277,10 @@ fn merge_array_mixed_def_paths() {
     // The definition for the root value is somewhat arbitrary, but currently starts with the file because that is what is loaded first.
     assert_eq!(paths.definition, Definition::Path(paths::root()));
     assert_eq!(paths.val.len(), 2);
-    assert_eq!(paths.val[0].0, "file");
-    assert_eq!(paths.val[0].1.root(&config), paths::root());
-    assert_eq!(paths.val[1].0, "cli");
-    assert_eq!(paths.val[1].1.root(&config), somedir);
+    assert_eq!(paths.val[0].0, "cli");
+    assert_eq!(paths.val[0].1.root(&config), somedir);
+    assert_eq!(paths.val[1].0, "file");
+    assert_eq!(paths.val[1].1.root(&config), paths::root());
 }
 
 #[cargo_test]

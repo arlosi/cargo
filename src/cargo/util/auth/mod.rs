@@ -99,6 +99,7 @@ fn credential_provider(config: &Config, sid: &SourceId) -> CargoResult<Vec<Vec<S
                 .collect()
         })
         .unwrap_or_else(default_providers);
+    tracing::debug!(?global_providers);
 
     let providers = match cfg {
         // If there's a specific provider configured for this registry, use it.
@@ -478,7 +479,8 @@ fn credential_action(
             }
         }
     }
-    Err(cargo_credential::Error::NotFound.into())
+    Err(cargo_credential::Error::NotFound)
+        .context("no credential providers could handle the request")
 }
 
 /// Returns the token to use for the given registry.

@@ -14,6 +14,7 @@ use filetime::FileTime;
 use jobserver::Client;
 
 use super::build_plan::BuildPlan;
+use super::cache::{self, Cache};
 use super::custom_build::{self, BuildDeps, BuildScriptOutputs, BuildScripts};
 use super::fingerprint::Fingerprint;
 use super::job_queue::JobQueue;
@@ -84,6 +85,9 @@ pub struct Context<'a, 'cfg> {
     /// because the target has a type error. This is in an Arc<Mutex<..>>
     /// because it is continuously updated as the job progresses.
     pub failed_scrape_units: Arc<Mutex<HashSet<Metadata>>>,
+
+    /// Artifact caching provider.
+    pub artifact_cache: Arc<dyn Cache>,
 }
 
 impl<'a, 'cfg> Context<'a, 'cfg> {
@@ -122,6 +126,7 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             lto: HashMap::new(),
             metadata_for_doc_units: HashMap::new(),
             failed_scrape_units: Arc::new(Mutex::new(HashSet::new())),
+            artifact_cache: cache::create_cache(),
         })
     }
 

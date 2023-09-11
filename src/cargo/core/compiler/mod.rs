@@ -35,6 +35,7 @@ pub mod artifact;
 mod build_config;
 pub(crate) mod build_context;
 mod build_plan;
+mod cache;
 mod compilation;
 mod compile_kind;
 pub(crate) mod context;
@@ -320,6 +321,8 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
         output_options.show_diagnostics = false;
     }
 
+    let artifact_cache = cx.artifact_cache.clone();
+
     return Ok(Work::new(move |state| {
         // Artifacts are in a different location than typical units,
         // hence we must assure the crate- and target-dependent
@@ -351,6 +354,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
             add_custom_flags(&mut rustc, &script_outputs, script_metadata)?;
         }
 
+        let mut all_outputs_in_cache = true;
         for output in outputs.iter() {
             // If there is both an rmeta and rlib, rustc will prefer to use the
             // rlib, even if it is older. Therefore, we must delete the rlib to
@@ -374,6 +378,15 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                     );
                 });
             }
+
+            if all_outputs_in_cache {
+                all_outputs_in_cache &=
+                    artifact_cache.get(package_id, &output.flavor, &output.path);
+            }
+        }
+
+        if all_outputs_in_cache {
+            return Ok(());
         }
 
         fn verbose_if_simple_exit_code(err: Error) -> Error {

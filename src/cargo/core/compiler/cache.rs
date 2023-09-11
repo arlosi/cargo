@@ -1,16 +1,14 @@
 //! Implements a cache for compilation artifacts.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::Path, sync::Arc};
 
-use crate::core::PackageId;
-
-use super::FileFlavor;
+use super::fingerprint::Fingerprint;
 
 pub trait Cache: Send + Sync {
     // TODO Figure out the correct key to use here.
     // TODO How to handle "uncachable" crates, or crates that depend on those.
-    fn get(&self, package_id: PackageId, file_flavor: &FileFlavor, output: &PathBuf) -> bool;
-    fn put(&self, package_id: PackageId, file_flavor: &FileFlavor, item: &PathBuf);
+    fn get(&self, fingerprint: &Fingerprint, target_root: &Path) -> bool;
+    fn put(&self, fingerprint: &Fingerprint, target_root: &Path);
 }
 
 pub fn create_cache() -> Arc<dyn Cache> {
@@ -20,12 +18,12 @@ pub fn create_cache() -> Arc<dyn Cache> {
 struct LocalCache {}
 
 impl Cache for LocalCache {
-    fn get(&self, _package_id: PackageId, file_flavor: &FileFlavor, output: &PathBuf) -> bool {
-        tracing::debug!("Get {file_flavor:?} {output:?}");
+    fn get(&self, _fingerprint: &Fingerprint, _target_root: &Path) -> bool {
+        tracing::debug!("Get");
         false
     }
 
-    fn put(&self, _package_id: PackageId, file_flavor: &FileFlavor, item: &PathBuf) {
-        tracing::debug!("Put {file_flavor:?} {item:?}");
+    fn put(&self, _fingerprint: &Fingerprint, _target_root: &Path) {
+        tracing::debug!("Put");
     }
 }

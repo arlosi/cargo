@@ -1339,17 +1339,24 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
         calculate_normal(cx, unit)?
     };
 
-    // After we built the initial `Fingerprint` be sure to update the
-    // `fs_status` field of it.
     let target_root = target_root(cx);
-    let cargo_exe = cx.bcx.config.cargo_exe()?;
-    fingerprint.check_filesystem(
-        &mut cx.mtime_cache,
-        unit.pkg.root(),
-        &target_root,
-        cargo_exe,
-        cx.bcx.config,
-    )?;
+    if cx.artifact_cache.get(&fingerprint, &target_root) {
+        // TODO mtimes
+        fingerprint.fs_status = FsStatus::UpToDate { mtimes: HashMap::new() };
+    } else {
+        // After we built the initial `Fingerprint` be sure to update the
+        // `fs_status` field of it.
+        let cargo_exe = cx.bcx.config.cargo_exe()?;
+        fingerprint.check_filesystem(
+            &mut cx.mtime_cache,
+            unit.pkg.root(),
+            &target_root,
+            cargo_exe,
+            cx.bcx.config,
+        )?;
+    }
+
+    // TODO: Call `put` on cache
 
     let fingerprint = Arc::new(fingerprint);
     cx.fingerprints

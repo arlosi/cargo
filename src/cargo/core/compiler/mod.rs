@@ -379,6 +379,8 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                 });
             }
 
+            // TODO Is this the correct place to hook, or we use fingerprint::prepare_target?
+            // TODO What if we can't get all of the artifacts? Can we rely on existing cargo "dirty" checks?
             if all_outputs_in_cache {
                 all_outputs_in_cache &=
                     artifact_cache.get(package_id, &output.flavor, &output.path);
@@ -452,6 +454,8 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
 
             // Exec should never return with success *and* generate an error.
             debug_assert_eq!(output_options.errors_seen, 0);
+
+            // TODO Call `put` on cache.
         }
 
         if rustc_dep_info_loc.exists() {

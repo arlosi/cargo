@@ -7,6 +7,8 @@ use crate::core::PackageId;
 use super::FileFlavor;
 
 pub trait Cache: Send + Sync {
+    // TODO Figure out the correct key to use here.
+    // TODO How to handle "uncachable" crates, or crates that depend on those.
     fn get(&self, package_id: PackageId, file_flavor: &FileFlavor, output: &PathBuf) -> bool;
     fn put(&self, package_id: PackageId, file_flavor: &FileFlavor, item: &PathBuf);
 }

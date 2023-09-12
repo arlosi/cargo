@@ -413,6 +413,7 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
     // compare it to an old version, if any, and attempt to print diagnostic
     // information about failed comparisons to aid in debugging.
     let fingerprint = calculate(cx, unit)?;
+    let fingerprint2 = fingerprint.clone();
     let mtime_on_use = cx.bcx.config.cli_unstable().mtime_on_use;
     let compare = compare_old_fingerprint(&loc, &*fingerprint, mtime_on_use);
     log_compare(unit, &compare);
@@ -521,7 +522,21 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
         Work::new(move |_| write_fingerprint(&loc, &fingerprint))
     };
 
-    Ok(Job::new_dirty(write_fingerprint, dirty_reason))
+    let write_finterprint_and_cache = write_fingerprint.then(cache_artifact(cx, &unit, fingerprint2)?);
+
+    Ok(Job::new_dirty(write_finterprint_and_cache, dirty_reason))
+}
+
+/// Store the compiled artifact in the cache.
+fn cache_artifact(cx: &mut Context<'_, '_>, unit: &Unit, fingerprint: Arc<Fingerprint>) -> CargoResult<Work> {
+    let outputs = cx.outputs(&unit)?;
+    let cache = cx.artifact_cache.clone();
+    let package_id = unit.pkg.package_id();
+
+    Ok(Work::new(move |_state| {
+        cache.put(&package_id, &fingerprint, &outputs);
+        Ok(())
+    }))
 }
 
 /// Dependency edge information for fingerprints. This is generated for each
@@ -1363,8 +1378,6 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
             cx.bcx.config,
         )?;
     }
-
-    // TODO: Call `put` on cache
 
     let fingerprint = Arc::new(fingerprint);
     cx.fingerprints

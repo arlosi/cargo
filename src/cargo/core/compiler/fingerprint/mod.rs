@@ -415,7 +415,13 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
     let fingerprint = calculate(cx, unit)?;
     let fingerprint2 = fingerprint.clone();
     let mtime_on_use = cx.bcx.config.cli_unstable().mtime_on_use;
-    let compare = compare_old_fingerprint(&loc, &*fingerprint, mtime_on_use);
+    let compare = if matches!(fingerprint.fs_status, FsStatus::LoadedFromCache) {
+        // Skip reading the old fingerprint if we loaded from the cache.
+        // TODO: is this the correct approach?
+        Ok(None)
+    } else {
+        compare_old_fingerprint(&loc, &*fingerprint, mtime_on_use)
+    };
     log_compare(unit, &compare);
 
     // If our comparison failed or reported dirty (e.g., we're going to trigger

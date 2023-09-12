@@ -642,12 +642,16 @@ pub enum FsStatus {
     /// This unit is up-to-date. All outputs and their corresponding mtime are
     /// listed in the payload here for other dependencies to compare against.
     UpToDate { mtimes: HashMap<PathBuf, FileTime> },
+
+    /// This unit is up-to-date and was loaded from the cache.
+    LoadedFromCache,
 }
 
 impl FsStatus {
     fn up_to_date(&self) -> bool {
         match self {
-            FsStatus::UpToDate { .. } => true,
+            FsStatus::UpToDate { .. }
+            | FsStatus::LoadedFromCache => true,
             FsStatus::Stale
             | FsStatus::StaleItem(_)
             | FsStatus::StaleDependency { .. }
@@ -1122,6 +1126,9 @@ impl Fingerprint {
         for dep in self.deps.iter() {
             let dep_mtimes = match &dep.fingerprint.fs_status {
                 FsStatus::UpToDate { mtimes } => mtimes,
+                // If we loaded the dependency from the cache, we already know
+                // it's up to date.
+                FsStatus::LoadedFromCache => continue,
                 // If our dependency is stale, so are we, so bail out.
                 FsStatus::Stale
                 | FsStatus::StaleItem(_)
@@ -1340,13 +1347,8 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
     };
 
     let target_root = target_root(cx);
-    if let Some(mut files) = cx.artifact_cache.get(&fingerprint, &target_root) {
-        fingerprint.fs_status = FsStatus::UpToDate {
-            mtimes: files.drain(..).map(|path| {
-                let mtime = paths::mtime(&path).expect("failed to get mtime");
-                (path, mtime)
-            }).collect()
-        };
+    if cx.artifact_cache.get(&fingerprint, &target_root) {
+        fingerprint.fs_status = FsStatus::LoadedFromCache;
     } else {
         // After we built the initial `Fingerprint` be sure to update the
         // `fs_status` field of it.

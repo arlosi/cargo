@@ -241,7 +241,7 @@ impl DirtyReason {
                 FsStatus::StaleDepFingerprint { name } => {
                     s.dirty_because(unit, format_args!("the dependency {name} was rebuilt"))
                 }
-                FsStatus::UpToDate { .. } => {
+                FsStatus::UpToDate { .. } | FsStatus::LoadedFromCache => {
                     unreachable!()
                 }
             },

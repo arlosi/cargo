@@ -569,18 +569,18 @@ struct DepFingerprint {
 #[derive(Serialize, Deserialize)]
 pub struct Fingerprint {
     /// Hash of the version of `rustc` used.
-    rustc: u64,
+    pub(crate) rustc: u64,
     /// Sorted list of cfg features enabled.
-    features: String,
+    pub(crate) features: String,
     /// Hash of the `Target` struct, including the target name,
     /// package-relative source path, edition, etc.
-    target: u64,
+    pub(crate) target: u64,
     /// Hash of the [`Profile`], [`CompileMode`], and any extra flags passed via
     /// `cargo rustc` or `cargo rustdoc`.
     ///
     /// [`Profile`]: crate::core::profiles::Profile
     /// [`CompileMode`]: crate::core::compiler::CompileMode
-    profile: u64,
+    pub(crate) profile: u64,
     /// Hash of the path to the base source file. This is relative to the
     /// workspace root for path members, or absolute for other sources.
     path: u64,
@@ -598,9 +598,9 @@ pub struct Fingerprint {
     /// Hash of some metadata from the manifest, such as "authors", or
     /// "description", which are exposed as environment variables during
     /// compilation.
-    metadata: u64,
+    pub(crate) metadata: u64,
     /// Hash of various config settings that change how things are compiled.
-    config: u64,
+    pub(crate) config: u64,
     /// The rustc target. This is only relevant for `.json` files, otherwise
     /// the metadata hash segregates the units.
     compile_kind: u64,
@@ -613,7 +613,7 @@ pub struct Fingerprint {
     /// fingerprint is out of date if this is missing, or if previous
     /// fingerprints output files are regenerated and look newer than this one.
     #[serde(skip)]
-    outputs: Vec<PathBuf>,
+    pub(crate) outputs: Vec<PathBuf>,
 }
 
 /// Indication of the status on the filesystem for a particular unit.
@@ -650,8 +650,7 @@ pub enum FsStatus {
 impl FsStatus {
     fn up_to_date(&self) -> bool {
         match self {
-            FsStatus::UpToDate { .. }
-            | FsStatus::LoadedFromCache => true,
+            FsStatus::UpToDate { .. } | FsStatus::LoadedFromCache => true,
             FsStatus::Stale
             | FsStatus::StaleItem(_)
             | FsStatus::StaleDependency { .. }
@@ -1346,12 +1345,15 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
         calculate_normal(cx, unit)?
     };
 
-    let target_root = target_root(cx);
-    if cx.artifact_cache.get(&fingerprint, &target_root) {
+    if cx
+        .artifact_cache
+        .get(&unit.pkg.package_id(), &fingerprint, &cx.outputs(unit)?)
+    {
         fingerprint.fs_status = FsStatus::LoadedFromCache;
     } else {
         // After we built the initial `Fingerprint` be sure to update the
         // `fs_status` field of it.
+        let target_root = target_root(cx);
         let cargo_exe = cx.bcx.config.cargo_exe()?;
         fingerprint.check_filesystem(
             &mut cx.mtime_cache,

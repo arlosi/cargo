@@ -1340,9 +1340,13 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
     };
 
     let target_root = target_root(cx);
-    if cx.artifact_cache.get(&fingerprint, &target_root) {
-        // TODO mtimes
-        fingerprint.fs_status = FsStatus::UpToDate { mtimes: HashMap::new() };
+    if let Some(mut files) = cx.artifact_cache.get(&fingerprint, &target_root) {
+        fingerprint.fs_status = FsStatus::UpToDate {
+            mtimes: files.drain(..).map(|path| {
+                let mtime = paths::mtime(&path).expect("failed to get mtime");
+                (path, mtime)
+            }).collect()
+        };
     } else {
         // After we built the initial `Fingerprint` be sure to update the
         // `fs_status` field of it.

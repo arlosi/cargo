@@ -91,6 +91,17 @@ impl<'a> Key<'a> {
     }
 }
 
+impl LocalCache {
+    fn is_cachable(package_id: &PackageId) -> bool {
+        if !package_id.source_id().is_remote_registry() {
+            tracing::debug!("'{package_id:?}' is uncachable: unsupported registry");
+            return false;
+        }
+
+        true
+    }
+}
+
 impl Cache for LocalCache {
     fn get(
         &self,
@@ -98,8 +109,7 @@ impl Cache for LocalCache {
         fingerprint: &Fingerprint,
         outputs: &[OutputFile],
     ) -> bool {
-        if !package_id.source_id().is_remote_registry() {
-            tracing::debug!("GET: Unsupported registry for '{package_id:?}'");
+        if !LocalCache::is_cachable(package_id) {
             return false;
         }
 
@@ -123,8 +133,7 @@ impl Cache for LocalCache {
     }
 
     fn put(&self, package_id: &PackageId, fingerprint: &Fingerprint, outputs: &[OutputFile]) {
-        if !package_id.source_id().is_remote_registry() {
-            tracing::debug!("PUT: Unsupported registry for '{package_id:?}'");
+        if !LocalCache::is_cachable(package_id) {
             return;
         }
 

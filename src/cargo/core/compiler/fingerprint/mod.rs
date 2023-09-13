@@ -522,13 +522,18 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
         Work::new(move |_| write_fingerprint(&loc, &fingerprint))
     };
 
-    let write_finterprint_and_cache = write_fingerprint.then(cache_artifact(cx, &unit, fingerprint2)?);
+    let write_finterprint_and_cache =
+        write_fingerprint.then(cache_artifact(cx, &unit, fingerprint2)?);
 
     Ok(Job::new_dirty(write_finterprint_and_cache, dirty_reason))
 }
 
 /// Store the compiled artifact in the cache.
-fn cache_artifact(cx: &mut Context<'_, '_>, unit: &Unit, fingerprint: Arc<Fingerprint>) -> CargoResult<Work> {
+fn cache_artifact(
+    cx: &mut Context<'_, '_>,
+    unit: &Unit,
+    fingerprint: Arc<Fingerprint>,
+) -> CargoResult<Work> {
     let outputs = cx.outputs(&unit)?;
     let cache = cx.artifact_cache.clone();
     let package_id = unit.pkg.package_id();
@@ -1772,7 +1777,7 @@ fn compare_old_fingerprint(
         // Skip reading the old fingerprint if we loaded from the cache.
         // TODO: is this the correct approach
         debug!("skipping fingerprint comparison because cache was used");
-        return Ok(None)
+        return Ok(None);
     }
 
     let old_fingerprint_short = paths::read(old_hash_path)?;

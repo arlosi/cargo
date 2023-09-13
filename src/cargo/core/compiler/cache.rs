@@ -113,9 +113,15 @@ struct CacheMetadata {
 }
 
 impl LocalCache {
-    fn is_cachable(package_id: &PackageId, all_deps: Option<&[(PackageId, TargetKind)]>) -> bool {
+    fn is_cachable(
+        package_id: &PackageId,
+        target_kind: &TargetKind,
+        all_deps: Option<&[(PackageId, TargetKind)]>,
+    ) -> bool {
         if !package_id.source_id().is_remote_registry() {
-            tracing::debug!("'{package_id}' is uncachable: unsupported registry");
+            tracing::debug!(
+                "'{package_id}' (as {target_kind:?}) is uncachable: unsupported registry"
+            );
             return false;
         }
 
@@ -124,15 +130,19 @@ impl LocalCache {
                 .iter()
                 .any(|(_, tk)| matches!(tk, TargetKind::CustomBuild))
             {
-                tracing::debug!("'{package_id}' is uncachable: depends on build script");
+                tracing::debug!(
+                    "'{package_id}' (as {target_kind:?}) is uncachable: depends on build script"
+                );
                 return false;
             }
 
             if !all_deps
                 .iter()
-                .all(|(p, _)| LocalCache::is_cachable(p, None))
+                .all(|(p, tk)| LocalCache::is_cachable(p, tk, None))
             {
-                tracing::debug!("'{package_id}' is uncachable: dependency is uncachable");
+                tracing::debug!(
+                    "'{package_id}' (as {target_kind:?}) is uncachable: dependency is uncachable"
+                );
                 return false;
             }
         }
@@ -150,7 +160,7 @@ impl Cache for LocalCache {
         all_deps: &[(PackageId, TargetKind)],
         outputs: &[OutputFile],
     ) -> CargoResult<bool> {
-        if !LocalCache::is_cachable(package_id, Some(all_deps)) {
+        if !LocalCache::is_cachable(package_id, target_kind, Some(all_deps)) {
             return Ok(false);
         }
 
@@ -193,7 +203,7 @@ impl Cache for LocalCache {
         all_deps: &[(PackageId, TargetKind)],
         outputs: &[OutputFile],
     ) -> CargoResult<()> {
-        if !LocalCache::is_cachable(package_id, Some(all_deps)) {
+        if !LocalCache::is_cachable(package_id, target_kind, Some(all_deps)) {
             return Ok(());
         }
 
@@ -222,7 +232,7 @@ impl Cache for LocalCache {
         for output in outputs {
             tracing::debug!(
                 "PUT: Adding {flavor:?} for '{package_id}' (as {target_kind:?}) to cache",
-                flavor=output.flavor
+                flavor = output.flavor
             );
             let mut writer = cacache::WriteOpts::new().open_hash_sync(&self.cache_directory)?;
             io::copy(

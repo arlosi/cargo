@@ -537,9 +537,10 @@ fn cache_artifact(
     let outputs = cx.outputs(&unit)?;
     let cache = cx.artifact_cache.clone();
     let package_id = unit.pkg.package_id();
+    let target_kind = unit.target.kind().clone();
 
     Ok(Work::new(move |_state| {
-        cache.put(&package_id, &fingerprint, &outputs);
+        cache.put(&package_id, &fingerprint, &target_kind, &outputs);
         Ok(())
     }))
 }
@@ -1365,10 +1366,12 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
         calculate_normal(cx, unit)?
     };
 
-    if cx
-        .artifact_cache
-        .get(&unit.pkg.package_id(), &fingerprint, &cx.outputs(unit)?)
-    {
+    if cx.artifact_cache.get(
+        &unit.pkg.package_id(),
+        &fingerprint,
+        unit.target.kind(),
+        &cx.outputs(unit)?,
+    ) {
         fingerprint.fs_status = FsStatus::LoadedFromCache;
     } else {
         // After we built the initial `Fingerprint` be sure to update the

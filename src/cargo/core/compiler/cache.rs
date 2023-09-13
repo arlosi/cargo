@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use serde::Serialize;
 
-use crate::core::PackageId;
+use crate::core::{PackageId, TargetKind};
 
 use super::context::OutputFile;
 use super::fingerprint::Fingerprint;
@@ -23,9 +23,16 @@ pub trait Cache: Send + Sync {
         &self,
         package_id: &PackageId,
         fingerprint: &Fingerprint,
+        target_kind: &TargetKind,
         outputs: &[OutputFile],
     ) -> bool;
-    fn put(&self, package_id: &PackageId, fingerprint: &Fingerprint, outputs: &[OutputFile]);
+    fn put(
+        &self,
+        package_id: &PackageId,
+        fingerprint: &Fingerprint,
+        target_kind: &TargetKind,
+        outputs: &[OutputFile],
+    );
 }
 
 pub fn create_cache() -> Arc<dyn Cache> {
@@ -55,10 +62,16 @@ struct PackageKey<'a> {
     config: u64,
 
     package_id: PackageId,
+
+    target_kind: &'a TargetKind,
 }
 
 impl<'a> PackageKey<'a> {
-    fn new(package_id: PackageId, fingerprint: &'a Fingerprint) -> Self {
+    fn new(
+        package_id: PackageId,
+        fingerprint: &'a Fingerprint,
+        target_kind: &'a TargetKind,
+    ) -> Self {
         Self {
             rustc: fingerprint.rustc,
             features: &fingerprint.features,
@@ -66,6 +79,7 @@ impl<'a> PackageKey<'a> {
             profile: fingerprint.profile,
             config: fingerprint.config,
             package_id,
+            target_kind,
         }
     }
 }
@@ -107,6 +121,7 @@ impl Cache for LocalCache {
         &self,
         package_id: &PackageId,
         fingerprint: &Fingerprint,
+        target_kind: &TargetKind,
         outputs: &[OutputFile],
     ) -> bool {
         if !LocalCache::is_cachable(package_id) {
@@ -114,17 +129,17 @@ impl Cache for LocalCache {
         }
 
         let mut all_found = true;
-        let package_common_key = PackageKey::new(package_id.clone(), fingerprint);
+        let package_common_key = PackageKey::new(package_id.clone(), fingerprint, target_kind);
         for output in outputs {
             let key = serde_json::to_string(&Key::new(output.flavor, &package_common_key)).unwrap();
             // TODO Try to hardlink, fallback to copy (reflink is only supported for ReFS).
             // TODO What if the file already exists? Skip or overwrite?
             if cacache::copy_sync(&self.cache_directory, &key, &output.path).is_ok() {
                 tracing::debug!(
-                    "GET: Found '{output:?}' for '{package_id:?}' in cache, copying to target dir"
+                    "GET: Found '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache, copying to target dir"
                 );
             } else {
-                tracing::debug!("GET: Did not find '{output:?}' for '{package_id:?}' in cache");
+                tracing::debug!("GET: Did not find '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache");
                 all_found = false;
             }
         }
@@ -132,12 +147,18 @@ impl Cache for LocalCache {
         all_found
     }
 
-    fn put(&self, package_id: &PackageId, fingerprint: &Fingerprint, outputs: &[OutputFile]) {
+    fn put(
+        &self,
+        package_id: &PackageId,
+        fingerprint: &Fingerprint,
+        target_kind: &TargetKind,
+        outputs: &[OutputFile],
+    ) {
         if !LocalCache::is_cachable(package_id) {
             return;
         }
 
-        let package_common_key = PackageKey::new(package_id.clone(), fingerprint);
+        let package_common_key = PackageKey::new(package_id.clone(), fingerprint, target_kind);
         for output in outputs {
             let key = serde_json::to_string(&Key::new(output.flavor, &package_common_key)).unwrap();
             match cacache::metadata_sync(&self.cache_directory, &key) {
@@ -146,11 +167,11 @@ impl Cache for LocalCache {
                 {
                     // Entry exists and has data, nothing to do.
                     tracing::debug!(
-                        "PUT: Found '{output:?}' for '{package_id:?}' in cache, skipping update"
+                        "PUT: Found '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache, skipping update"
                     );
                 }
                 _ => {
-                    tracing::debug!("PUT: Adding '{output:?}' for '{package_id:?}' to cache");
+                    tracing::debug!("PUT: Adding '{output:?}' for '{package_id:?}' (as {target_kind:?}) to cache");
                     if let Err(err) = (|| -> anyhow::Result<()> {
                         let mut writer = cacache::SyncWriter::create(&self.cache_directory, &key)
                             .context("Create cache writer")?;
@@ -165,7 +186,7 @@ impl Cache for LocalCache {
                     })() {
                         // TODO DO we need better error handling, or is this ok?
                         tracing::warn!(
-                            "Failed to add '{output:?}' for '{package_id:?}' to cache: {err:?}"
+                            "Failed to add '{output:?}' for '{package_id:?}' (as {target_kind:?}) to cache: {err:?}"
                         );
                     }
                 }

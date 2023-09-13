@@ -188,6 +188,7 @@ fn normalize_windows(text: &str, cwd: Option<&Path>) -> String {
 fn substitute_macros(input: &str) -> String {
     let macros = [
         ("[RUNNING]", "     Running"),
+        ("[CACHED]", "      Cached"),
         ("[COMPILING]", "   Compiling"),
         ("[CHECKING]", "    Checking"),
         ("[COMPLETED]", "   Completed"),

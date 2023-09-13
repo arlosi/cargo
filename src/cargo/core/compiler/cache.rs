@@ -221,7 +221,7 @@ impl Cache for LocalCache {
                         flavor=output.flavor
                     );
                 }
-                return Ok(())
+                return Ok(());
             }
             _ => {}
         }

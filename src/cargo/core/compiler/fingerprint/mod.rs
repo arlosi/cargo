@@ -538,9 +538,14 @@ fn cache_artifact(
     let cache = cx.artifact_cache.clone();
     let package_id = unit.pkg.package_id();
     let target_kind = unit.target.kind().clone();
+    let all_deps = cx
+        .all_unit_deps(&unit)
+        .iter()
+        .map(|ud| (ud.unit.pkg.package_id(), ud.unit.target.kind().clone()))
+        .collect::<Vec<_>>();
 
     Ok(Work::new(move |_state| {
-        if let Err(err) = cache.put(&package_id, &fingerprint, &target_kind, &outputs) {
+        if let Err(err) = cache.put(&package_id, &fingerprint, &target_kind, &all_deps, &outputs) {
             tracing::warn!("failed to PUT {package_id} in cache: {err}")
         }
         Ok(())
@@ -1368,10 +1373,16 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
         calculate_normal(cx, unit)?
     };
 
+    let all_deps = cx
+        .all_unit_deps(&unit)
+        .iter()
+        .map(|ud| (ud.unit.pkg.package_id(), ud.unit.target.kind().clone()))
+        .collect::<Vec<_>>();
     let use_cache = match cx.artifact_cache.get(
         &unit.pkg.package_id(),
         &fingerprint,
         unit.target.kind(),
+        &all_deps,
         &cx.outputs(unit)?,
     ) {
         Ok(val) => val,

@@ -25,6 +25,7 @@ pub trait Cache: Send + Sync {
         package_id: &PackageId,
         fingerprint: &Fingerprint,
         target_kind: &TargetKind,
+        all_deps: &[(PackageId, TargetKind)],
         outputs: &[OutputFile],
     ) -> CargoResult<bool>;
     fn put(
@@ -32,6 +33,7 @@ pub trait Cache: Send + Sync {
         package_id: &PackageId,
         fingerprint: &Fingerprint,
         target_kind: &TargetKind,
+        all_deps: &[(PackageId, TargetKind)],
         outputs: &[OutputFile],
     ) -> CargoResult<()>;
 }
@@ -111,10 +113,27 @@ struct CacheMetadata {
 }
 
 impl LocalCache {
-    fn is_cachable(package_id: &PackageId) -> bool {
+    fn is_cachable(package_id: &PackageId, all_deps: Option<&[(PackageId, TargetKind)]>) -> bool {
         if !package_id.source_id().is_remote_registry() {
-            tracing::debug!("'{package_id:?}' is uncachable: unsupported registry");
+            tracing::debug!("'{package_id}' is uncachable: unsupported registry");
             return false;
+        }
+
+        if let Some(all_deps) = all_deps {
+            if all_deps
+                .iter()
+                .any(|(_, tk)| matches!(tk, TargetKind::CustomBuild))
+            {
+                tracing::debug!("'{package_id}' is uncachable: depends on build script");
+            }
+
+            if !all_deps
+                .iter()
+                .all(|(p, _)| LocalCache::is_cachable(p, None))
+            {
+                tracing::debug!("'{package_id}' is uncachable: dependency is uncachable");
+                return false;
+            }
         }
 
         true
@@ -127,9 +146,10 @@ impl Cache for LocalCache {
         package_id: &PackageId,
         fingerprint: &Fingerprint,
         target_kind: &TargetKind,
+        all_deps: &[(PackageId, TargetKind)],
         outputs: &[OutputFile],
     ) -> CargoResult<bool> {
-        if !LocalCache::is_cachable(package_id) {
+        if !LocalCache::is_cachable(package_id, Some(all_deps)) {
             return Ok(false);
         }
 
@@ -148,9 +168,15 @@ impl Cache for LocalCache {
                 // TODO Try to hardlink, fallback to copy (reflink is only supported for ReFS).
                 // TODO What if the file already exists? Skip or overwrite?
                 if cacache::copy_hash_sync(&self.cache_directory, sri, &output.path).is_ok() {
-                    tracing::debug!("GET: Found '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache, copying to target dir");
+                    tracing::debug!(
+                        "GET: Found {flavor:?} for '{package_id}' (as {target_kind:?}) in cache, copying to target dir",
+                        flavor=output.flavor
+                    );
                 } else {
-                    tracing::debug!("GET: Did not find '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache");
+                    tracing::debug!(
+                        "GET: Did not find {flavor:?} for '{package_id}' (as {target_kind:?}) in cache",
+                        flavor=output.flavor
+                    );
                     all_found = false;
                 }
             }
@@ -163,9 +189,10 @@ impl Cache for LocalCache {
         package_id: &PackageId,
         fingerprint: &Fingerprint,
         target_kind: &TargetKind,
+        all_deps: &[(PackageId, TargetKind)],
         outputs: &[OutputFile],
     ) -> CargoResult<()> {
-        if !LocalCache::is_cachable(package_id) {
+        if !LocalCache::is_cachable(package_id, Some(all_deps)) {
             return Ok(());
         }
 
@@ -179,8 +206,9 @@ impl Cache for LocalCache {
                 for output in outputs {
                     // Entry exists and has data, nothing to do.
                     tracing::debug!(
-                                "PUT: Found '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache, skipping update"
-                            );
+                        "PUT: Found {flavor:?} for '{package_id}' (as {target_kind:?}) in cache, skipping update",
+                        flavor=output.flavor
+                    );
                 }
             }
             _ => {}
@@ -192,7 +220,8 @@ impl Cache for LocalCache {
 
         for output in outputs {
             tracing::debug!(
-                "PUT: Adding '{output:?}' for '{package_id:?}' (as {target_kind:?}) to cache"
+                "PUT: Adding {flavor:?} for '{package_id}' (as {target_kind:?}) to cache",
+                flavor=output.flavor
             );
             let mut writer = cacache::WriteOpts::new().open_hash_sync(&self.cache_directory)?;
             io::copy(

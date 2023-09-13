@@ -381,6 +381,21 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
         &self.bcx.unit_graph[unit]
     }
 
+    /// all direct and indirect dependencies for the given unit.
+    pub fn all_unit_deps(&self, unit: &Unit) -> Vec<UnitDep> {
+        fn add_deps(context: &Context<'_, '_>, unit: &Unit, deps: &mut HashSet<UnitDep>) {
+            for dep in context.unit_deps(unit) {
+                if deps.insert(dep.clone()) {
+                    add_deps(context, &dep.unit, deps);
+                }
+            }
+        }
+
+        let mut deps = HashSet::new();
+        add_deps(self, unit, &mut deps);
+        deps.into_iter().collect::<_>()
+    }
+
     /// Returns the RunCustomBuild Unit associated with the given Unit.
     ///
     /// If the package does not have a build script, this returns None.

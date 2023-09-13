@@ -1,7 +1,7 @@
 //! Implements a cache for compilation artifacts.
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,9 +54,14 @@ struct LocalCache {
     cache_directory: PathBuf,
 }
 
-/// Key information that is common across all items in a package.
+// TODO Figure out the correct key to use here.
+
+/// Key to find a unique artifact in the cache.
 #[derive(Debug, Serialize)]
-struct PackageKey<'a> {
+struct Key<'a> {
+    /// Version, in case the meaning of any field changes.
+    cache_version: u64,
+
     // Information for the Key taken from [`Fingerprint`].
     rustc: u64,
     features: &'a str,
@@ -69,13 +74,14 @@ struct PackageKey<'a> {
     target_kind: &'a TargetKind,
 }
 
-impl<'a> PackageKey<'a> {
+impl<'a> Key<'a> {
     fn new(
         package_id: PackageId,
         fingerprint: &'a Fingerprint,
         target_kind: &'a TargetKind,
     ) -> Self {
         Self {
+            cache_version: CACHE_VERSION,
             rustc: fingerprint.rustc,
             features: &fingerprint.features,
             target: fingerprint.target,
@@ -83,24 +89,6 @@ impl<'a> PackageKey<'a> {
             config: fingerprint.config,
             package_id,
             target_kind,
-        }
-    }
-}
-
-// TODO Figure out the correct key to use here.
-#[derive(Debug, Serialize)]
-struct Key<'a> {
-    /// Version, in case the meaning of any field changes.
-    cache_version: u64,
-    #[serde(flatten)]
-    package_common: &'a PackageKey<'a>,
-}
-
-impl<'a> Key<'a> {
-    fn new(package_common: &'a PackageKey<'a>) -> Self {
-        Self {
-            cache_version: CACHE_VERSION,
-            package_common,
         }
     }
 }
@@ -165,8 +153,8 @@ impl Cache for LocalCache {
         }
 
         let mut all_found = true;
-        let package_common_key = PackageKey::new(package_id.clone(), fingerprint, target_kind);
-        let key = serde_json::to_string(&Key::new(&package_common_key)).unwrap();
+        let key =
+            serde_json::to_string(&Key::new(package_id.clone(), fingerprint, target_kind)).unwrap();
         let Some(metadata) = cacache::metadata_sync(&self.cache_directory, &key)? else {
             return Ok(false);
         };
@@ -178,17 +166,29 @@ impl Cache for LocalCache {
             {
                 // TODO Try to hardlink, fallback to copy (reflink is only supported for ReFS).
                 // TODO What if the file already exists? Skip or overwrite?
-                if cacache::copy_hash_sync(&self.cache_directory, sri, &output.path).is_ok() {
-                    tracing::debug!(
-                        "GET: Found {flavor:?} for '{package_id}' (as {target_kind:?}) in cache, copying to target dir",
-                        flavor=output.flavor
-                    );
-                } else {
-                    tracing::debug!(
-                        "GET: Did not find {flavor:?} for '{package_id}' (as {target_kind:?}) in cache",
-                        flavor=output.flavor
-                    );
-                    all_found = false;
+                fs::create_dir_all(output.path.parent().unwrap())?;
+                match cacache::copy_hash_sync(&self.cache_directory, sri, &output.path) {
+                    Ok(_) => {
+                        tracing::debug!(
+                            "GET: Found {flavor:?} for '{package_id}' (as {target_kind:?}) in cache, copying to {path:?}",
+                            flavor=output.flavor,
+                            path=output.path,
+                        );
+                    }
+                    Err(cacache::Error::EntryNotFound(..)) => {
+                        tracing::debug!(
+                            "GET: Did not find {flavor:?} for '{package_id}' (as {target_kind:?}) in cache",
+                            flavor=output.flavor
+                        );
+                        all_found = false;
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            "GET: Error retrieving {flavor:?} for '{package_id}' (as {target_kind:?}): {err:?}",
+                            flavor=output.flavor
+                        );
+                        return Err(err.into());
+                    }
                 }
             }
         }
@@ -207,8 +207,8 @@ impl Cache for LocalCache {
             return Ok(());
         }
 
-        let package_common_key = PackageKey::new(package_id.clone(), fingerprint, target_kind);
-        let key = serde_json::to_string(&Key::new(&package_common_key)).unwrap();
+        let key =
+            serde_json::to_string(&Key::new(package_id.clone(), fingerprint, target_kind)).unwrap();
         let previous_metadata = cacache::metadata_sync(&self.cache_directory, &key);
         match previous_metadata {
             Ok(Some(metadata))
@@ -221,7 +221,7 @@ impl Cache for LocalCache {
                         flavor=output.flavor
                     );
                 }
-                return Ok(())
+                return Ok(());
             }
             _ => {}
         }

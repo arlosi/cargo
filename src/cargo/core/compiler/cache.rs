@@ -123,6 +123,17 @@ impl LocalCache {
                 );
                 return false;
             }
+            if all_deps
+                .iter()
+                .any(|(_, tk)|
+                    matches!(tk, TargetKind::Lib(types) if types.contains(&super::CrateType::ProcMacro))
+                )
+            {
+                tracing::debug!(
+                    "'{package_id}' (as {target_kind:?}) is uncachable: depends on a proc macro"
+                );
+                return false;
+            }
 
             if !all_deps
                 .iter()

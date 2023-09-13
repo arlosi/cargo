@@ -540,7 +540,9 @@ fn cache_artifact(
     let target_kind = unit.target.kind().clone();
 
     Ok(Work::new(move |_state| {
-        cache.put(&package_id, &fingerprint, &target_kind, &outputs);
+        if let Err(err) = cache.put(&package_id, &fingerprint, &target_kind, &outputs) {
+            tracing::warn!("failed to PUT {package_id} in cache: {err}")
+        }
         Ok(())
     }))
 }
@@ -1366,13 +1368,25 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
         calculate_normal(cx, unit)?
     };
 
-    if cx.artifact_cache.get(
+    let use_cache = match cx.artifact_cache.get(
         &unit.pkg.package_id(),
         &fingerprint,
         unit.target.kind(),
         &cx.outputs(unit)?,
     ) {
+        Ok(val) => val,
+        Err(e) => {
+            tracing::warn!(
+                "failed to read {pkg} from cache: {e}",
+                pkg = unit.pkg.package_id()
+            );
+            false
+        }
+    };
+
+    if use_cache {
         fingerprint.fs_status = FsStatus::LoadedFromCache;
+        cx.bcx.config.shell().status("Cached", &unit.pkg)?;
     } else {
         // After we built the initial `Fingerprint` be sure to update the
         // `fs_status` field of it.

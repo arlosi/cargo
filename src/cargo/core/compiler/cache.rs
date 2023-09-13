@@ -1,18 +1,19 @@
 //! Implements a cache for compilation artifacts.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::{PackageId, TargetKind};
+use crate::CargoResult;
 
 use super::context::OutputFile;
 use super::fingerprint::Fingerprint;
-use super::FileFlavor;
 
 pub trait Cache: Send + Sync {
     // TODO How to handle "uncachable" crates, or crates that depend on those.
@@ -25,14 +26,14 @@ pub trait Cache: Send + Sync {
         fingerprint: &Fingerprint,
         target_kind: &TargetKind,
         outputs: &[OutputFile],
-    ) -> bool;
+    ) -> CargoResult<bool>;
     fn put(
         &self,
         package_id: &PackageId,
         fingerprint: &Fingerprint,
         target_kind: &TargetKind,
         outputs: &[OutputFile],
-    );
+    ) -> CargoResult<()>;
 }
 
 pub fn create_cache() -> Arc<dyn Cache> {
@@ -89,20 +90,24 @@ impl<'a> PackageKey<'a> {
 struct Key<'a> {
     /// Version, in case the meaning of any field changes.
     cache_version: u64,
-    // TODO is this unique per file in a crate?
-    file_flavor: FileFlavor,
     #[serde(flatten)]
     package_common: &'a PackageKey<'a>,
 }
 
 impl<'a> Key<'a> {
-    fn new(file_flavor: FileFlavor, package_common: &'a PackageKey<'a>) -> Self {
+    fn new(package_common: &'a PackageKey<'a>) -> Self {
         Self {
             cache_version: CACHE_VERSION,
-            file_flavor,
             package_common,
         }
     }
+}
+
+/// Structure that serialized per-cache key with pointers
+/// to other cache entries for individual files.
+#[derive(Serialize, Deserialize)]
+struct CacheMetadata {
+    files: HashMap<String, cacache::Integrity>,
 }
 
 impl LocalCache {
@@ -123,28 +128,34 @@ impl Cache for LocalCache {
         fingerprint: &Fingerprint,
         target_kind: &TargetKind,
         outputs: &[OutputFile],
-    ) -> bool {
+    ) -> CargoResult<bool> {
         if !LocalCache::is_cachable(package_id) {
-            return false;
+            return Ok(false);
         }
 
         let mut all_found = true;
         let package_common_key = PackageKey::new(package_id.clone(), fingerprint, target_kind);
+        let key = serde_json::to_string(&Key::new(&package_common_key)).unwrap();
+        let Some(metadata) = cacache::metadata_sync(&self.cache_directory, &key)? else {
+            return Ok(false);
+        };
+        let metadata: CacheMetadata = serde_json::from_value(metadata.metadata)?;
         for output in outputs {
-            let key = serde_json::to_string(&Key::new(output.flavor, &package_common_key)).unwrap();
-            // TODO Try to hardlink, fallback to copy (reflink is only supported for ReFS).
-            // TODO What if the file already exists? Skip or overwrite?
-            if cacache::copy_sync(&self.cache_directory, &key, &output.path).is_ok() {
-                tracing::debug!(
-                    "GET: Found '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache, copying to target dir"
-                );
-            } else {
-                tracing::debug!("GET: Did not find '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache");
-                all_found = false;
+            if let Some(sri) = metadata
+                .files
+                .get(output.path.file_name().unwrap().to_str().unwrap())
+            {
+                // TODO Try to hardlink, fallback to copy (reflink is only supported for ReFS).
+                // TODO What if the file already exists? Skip or overwrite?
+                if cacache::copy_hash_sync(&self.cache_directory, sri, &output.path).is_ok() {
+                    tracing::debug!("GET: Found '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache, copying to target dir");
+                } else {
+                    tracing::debug!("GET: Did not find '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache");
+                    all_found = false;
+                }
             }
         }
-
-        all_found
+        Ok(all_found)
     }
 
     fn put(
@@ -153,44 +164,61 @@ impl Cache for LocalCache {
         fingerprint: &Fingerprint,
         target_kind: &TargetKind,
         outputs: &[OutputFile],
-    ) {
+    ) -> CargoResult<()> {
         if !LocalCache::is_cachable(package_id) {
-            return;
+            return Ok(());
         }
 
         let package_common_key = PackageKey::new(package_id.clone(), fingerprint, target_kind);
-        for output in outputs {
-            let key = serde_json::to_string(&Key::new(output.flavor, &package_common_key)).unwrap();
-            match cacache::metadata_sync(&self.cache_directory, &key) {
-                Ok(Some(metadata))
-                    if cacache::exists_sync(&self.cache_directory, &metadata.integrity) =>
-                {
+        let key = serde_json::to_string(&Key::new(&package_common_key)).unwrap();
+        let previous_metadata = cacache::metadata_sync(&self.cache_directory, &key);
+        match previous_metadata {
+            Ok(Some(metadata))
+                if cacache::exists_sync(&self.cache_directory, &metadata.integrity) =>
+            {
+                for output in outputs {
                     // Entry exists and has data, nothing to do.
                     tracing::debug!(
-                        "PUT: Found '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache, skipping update"
-                    );
-                }
-                _ => {
-                    tracing::debug!("PUT: Adding '{output:?}' for '{package_id:?}' (as {target_kind:?}) to cache");
-                    if let Err(err) = (|| -> anyhow::Result<()> {
-                        let mut writer = cacache::SyncWriter::create(&self.cache_directory, &key)
-                            .context("Create cache writer")?;
-                        io::copy(
-                            &mut File::open(&output.path).context("Open build output")?,
-                            &mut writer,
-                        )
-                        .context("Copy build output to cache")?;
-                        // TODO What error would we get if we were racing to write this item?
-                        writer.commit().context("Commit data to cache")?;
-                        Ok(())
-                    })() {
-                        // TODO DO we need better error handling, or is this ok?
-                        tracing::warn!(
-                            "Failed to add '{output:?}' for '{package_id:?}' (as {target_kind:?}) to cache: {err:?}"
-                        );
-                    }
+                                "PUT: Found '{output:?}' for '{package_id:?}' (as {target_kind:?}) in cache, skipping update"
+                            );
                 }
             }
+            _ => {}
         }
+
+        let mut metadata = CacheMetadata {
+            files: HashMap::new(),
+        };
+
+        for output in outputs {
+            tracing::debug!(
+                "PUT: Adding '{output:?}' for '{package_id:?}' (as {target_kind:?}) to cache"
+            );
+            let mut writer = cacache::WriteOpts::new().open_hash_sync(&self.cache_directory)?;
+            io::copy(
+                &mut File::open(&output.path).context("open build output")?,
+                &mut writer,
+            )
+            .context("copy build output to cache")?;
+
+            let integrety = writer.commit().context("Commit data to cache")?;
+            metadata.files.insert(
+                output
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+                integrety,
+            );
+        }
+
+        // We don't get an error if racing to add to the cache. Both entries are added, but the key will point to the newest one.
+        cacache::WriteOpts::new()
+            .metadata(serde_json::to_value(&metadata).unwrap())
+            .open_sync(&self.cache_directory, &key)?
+            .commit()?;
+        Ok(())
     }
 }

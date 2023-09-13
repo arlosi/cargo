@@ -1368,7 +1368,7 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
 
     if cx
         .artifact_cache
-        .get(&unit.pkg.package_id(), &fingerprint, &cx.outputs(unit)?)
+        .get(&unit.pkg.package_id(), &fingerprint)
     {
         fingerprint.fs_status = FsStatus::LoadedFromCache;
     } else {

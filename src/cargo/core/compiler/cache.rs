@@ -1,18 +1,16 @@
 //! Implements a cache for compilation artifacts.
 
-use std::fs::File;
-use std::io;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Context;
-use serde::Serialize;
+use bincode;
+use serde::{Serialize, Deserialize};
 
 use crate::core::PackageId;
 
 use super::context::OutputFile;
 use super::fingerprint::Fingerprint;
-use super::FileFlavor;
 
 pub trait Cache: Send + Sync {
     // TODO How to handle "uncachable" crates, or crates that depend on those.
@@ -23,7 +21,6 @@ pub trait Cache: Send + Sync {
         &self,
         package_id: &PackageId,
         fingerprint: &Fingerprint,
-        outputs: &[OutputFile],
     ) -> bool;
     fn put(&self, package_id: &PackageId, fingerprint: &Fingerprint, outputs: &[OutputFile]);
 }
@@ -35,7 +32,7 @@ pub fn create_cache() -> Arc<dyn Cache> {
 }
 
 /// Current cache version.
-const CACHE_VERSION: u64 = 1;
+const CACHE_VERSION: u64 = 2;
 
 /// Default sub-directory for the cache.
 const CACHE_SUBDIRECTORY: &'static str = "artifact_cache";
@@ -75,20 +72,36 @@ impl<'a> PackageKey<'a> {
 struct Key<'a> {
     /// Version, in case the meaning of any field changes.
     cache_version: u64,
-    // TODO is this unique per file in a crate?
-    file_flavor: FileFlavor,
     #[serde(flatten)]
     package_common: &'a PackageKey<'a>,
 }
 
 impl<'a> Key<'a> {
-    fn new(file_flavor: FileFlavor, package_common: &'a PackageKey<'a>) -> Self {
+    fn new(package_common: &'a PackageKey<'a>) -> Self {
         Self {
             cache_version: CACHE_VERSION,
-            file_flavor,
             package_common,
         }
     }
+}
+
+/// A serializable version of an OutputFile.
+#[derive(Debug, Serialize, Deserialize)]
+struct SerializableOutputFile {
+    pub path: PathBuf,
+    pub file_data: Vec<u8>,
+}
+
+impl From<&OutputFile> for SerializableOutputFile { // TODO: Result: should be TryFrom
+    fn from(value: &OutputFile) -> Self {
+        SerializableOutputFile { path: value.path.clone(), file_data: fs::read(&value.path).unwrap() } // TODO: Result
+    }
+}
+
+/// A group of OutputFiles in a form that can be serialized and deserialized.
+#[derive(Serialize, Deserialize)]
+struct SerializableOutputFiles {
+    pub outputs: Vec<SerializableOutputFile>,
 }
 
 impl Cache for LocalCache {
@@ -96,30 +109,32 @@ impl Cache for LocalCache {
         &self,
         package_id: &PackageId,
         fingerprint: &Fingerprint,
-        outputs: &[OutputFile],
     ) -> bool {
         if !package_id.source_id().is_remote_registry() {
             tracing::debug!("GET: Unsupported registry for '{package_id:?}'");
             return false;
         }
-
-        let mut all_found = true;
         let package_common_key = PackageKey::new(package_id.clone(), fingerprint);
-        for output in outputs {
-            let key = serde_json::to_string(&Key::new(output.flavor, &package_common_key)).unwrap();
-            // TODO Try to hardlink, fallback to copy (reflink is only supported for ReFS).
-            // TODO What if the file already exists? Skip or overwrite?
-            if cacache::copy_sync(&self.cache_directory, &key, &output.path).is_ok() {
-                tracing::debug!(
-                    "GET: Found '{output:?}' for '{package_id:?}' in cache, copying to target dir"
-                );
-            } else {
-                tracing::debug!("GET: Did not find '{output:?}' for '{package_id:?}' in cache");
-                all_found = false;
-            }
-        }
+        let key = serde_json::to_string(&Key::new(&package_common_key)).unwrap();
 
-        all_found
+        let cache_value = cacache::read_sync(&self.cache_directory, &key);
+        if let Ok(cache_value) = cache_value {
+            let cache_value = bincode::deserialize::<SerializableOutputFiles>(&cache_value).unwrap(); // TODO: Result
+
+            for serialized_output in cache_value.outputs {
+                let path = &serialized_output.path;
+                fs::write(path, &serialized_output.file_data).unwrap();
+                tracing::debug!(
+                    "GET: Writing cached output file '{path:?}' for '{package_id:?}'"
+                );
+            }
+
+            true
+        } else {
+            tracing::debug!("GET: Could not get entry for '{package_id:?}'");
+
+            false
+        }
     }
 
     fn put(&self, package_id: &PackageId, fingerprint: &Fingerprint, outputs: &[OutputFile]) {
@@ -129,36 +144,29 @@ impl Cache for LocalCache {
         }
 
         let package_common_key = PackageKey::new(package_id.clone(), fingerprint);
-        for output in outputs {
-            let key = serde_json::to_string(&Key::new(output.flavor, &package_common_key)).unwrap();
-            match cacache::metadata_sync(&self.cache_directory, &key) {
-                Ok(Some(metadata))
-                    if cacache::exists_sync(&self.cache_directory, &metadata.integrity) =>
-                {
-                    // Entry exists and has data, nothing to do.
-                    tracing::debug!(
-                        "PUT: Found '{output:?}' for '{package_id:?}' in cache, skipping update"
+        let key = serde_json::to_string(&Key::new(&package_common_key)).unwrap();
+        let files = SerializableOutputFiles { outputs: outputs.iter().map(SerializableOutputFile::from).collect() };
+        let serialized_files = bincode::serialize(&files).unwrap();
+
+        match cacache::metadata_sync(&self.cache_directory, &key) {
+            Ok(Some(metadata))
+                if cacache::exists_sync(&self.cache_directory, &metadata.integrity) =>
+            {
+                // Entry exists and has data, nothing to do.
+                tracing::debug!(
+                    "PUT: Found '{package_id:?}' in cache, skipping update"
+                );
+            }
+            _ => {
+                tracing::debug!("PUT: Adding '{package_id:?}' to cache");
+                if let Err(err) = (|| -> anyhow::Result<()> {
+                    cacache::write_sync(&self.cache_directory, &key, &serialized_files).unwrap(); // TODO: Result
+                    Ok(())
+                })() {
+                    // TODO DO we need better error handling, or is this ok?
+                    tracing::warn!(
+                        "Failed to add '{package_id:?}' to cache: {err:?}"
                     );
-                }
-                _ => {
-                    tracing::debug!("PUT: Adding '{output:?}' for '{package_id:?}' to cache");
-                    if let Err(err) = (|| -> anyhow::Result<()> {
-                        let mut writer = cacache::SyncWriter::create(&self.cache_directory, &key)
-                            .context("Create cache writer")?;
-                        io::copy(
-                            &mut File::open(&output.path).context("Open build output")?,
-                            &mut writer,
-                        )
-                        .context("Copy build output to cache")?;
-                        // TODO What error would we get if we were racing to write this item?
-                        writer.commit().context("Commit data to cache")?;
-                        Ok(())
-                    })() {
-                        // TODO DO we need better error handling, or is this ok?
-                        tracing::warn!(
-                            "Failed to add '{output:?}' for '{package_id:?}' to cache: {err:?}"
-                        );
-                    }
                 }
             }
         }

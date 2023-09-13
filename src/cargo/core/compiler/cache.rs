@@ -125,6 +125,7 @@ impl LocalCache {
                 .any(|(_, tk)| matches!(tk, TargetKind::CustomBuild))
             {
                 tracing::debug!("'{package_id}' is uncachable: depends on build script");
+                return false;
             }
 
             if !all_deps

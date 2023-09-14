@@ -16,8 +16,6 @@ use super::context::OutputFile;
 use super::fingerprint::Fingerprint;
 
 pub trait Cache: Send + Sync {
-    // TODO How to handle "uncachable" crates, or crates that depend on those.
-
     /// Try to get an item from the cache by its Fingerprint and place it in the target_root.
     /// If the cache is hit, the paths of files placed in the target_root are returned.
     fn get(
@@ -103,13 +101,21 @@ struct CacheMetadata {
 impl LocalCache {
     fn is_cachable(
         package_id: &PackageId,
+        fingerprint: Option<&Fingerprint>,
         target_kind: &TargetKind,
         all_deps: Option<&[(PackageId, TargetKind)]>,
     ) -> bool {
+        // TODO what else makes something uncachable?
+
         if !package_id.source_id().is_remote_registry() {
             tracing::debug!(
                 "'{package_id}' (as {target_kind:?}) is uncachable: unsupported registry"
             );
+            return false;
+        }
+
+        if matches!(fingerprint, Some(fingerprint) if !fingerprint.rustflags.is_empty()) {
+            tracing::debug!("'{package_id}' (as {target_kind:?}) is uncachable: RUSTFLAGS is set");
             return false;
         }
 
@@ -137,7 +143,7 @@ impl LocalCache {
 
             if !all_deps
                 .iter()
-                .all(|(p, tk)| LocalCache::is_cachable(p, tk, None))
+                .all(|(p, tk)| LocalCache::is_cachable(p, None, tk, None))
             {
                 tracing::debug!(
                     "'{package_id}' (as {target_kind:?}) is uncachable: dependency is uncachable"
@@ -159,7 +165,7 @@ impl Cache for LocalCache {
         all_deps: &[(PackageId, TargetKind)],
         outputs: &[OutputFile],
     ) -> CargoResult<bool> {
-        if !LocalCache::is_cachable(package_id, target_kind, Some(all_deps)) {
+        if !LocalCache::is_cachable(package_id, Some(fingerprint), target_kind, Some(all_deps)) {
             return Ok(false);
         }
 
@@ -176,7 +182,6 @@ impl Cache for LocalCache {
                 .get(output.path.file_name().unwrap().to_str().unwrap())
             {
                 // TODO Try to hardlink, fallback to copy (reflink is only supported for ReFS).
-                // TODO What if the file already exists? Skip or overwrite?
                 fs::create_dir_all(output.path.parent().unwrap())?;
                 match cacache::copy_hash_sync(&self.cache_directory, sri, &output.path) {
                     Ok(_) => {
@@ -214,7 +219,7 @@ impl Cache for LocalCache {
         all_deps: &[(PackageId, TargetKind)],
         outputs: &[OutputFile],
     ) -> CargoResult<()> {
-        if !LocalCache::is_cachable(package_id, target_kind, Some(all_deps)) {
+        if !LocalCache::is_cachable(package_id, Some(fingerprint), target_kind, Some(all_deps)) {
             return Ok(());
         }
 

@@ -622,7 +622,7 @@ pub struct Fingerprint {
     #[serde(skip)]
     memoized_hash: Mutex<Option<u64>>,
     /// RUSTFLAGS/RUSTDOCFLAGS environment variable value (or config value).
-    rustflags: Vec<String>,
+    pub(crate) rustflags: Vec<String>,
     /// Hash of some metadata from the manifest, such as "authors", or
     /// "description", which are exposed as environment variables during
     /// compilation.

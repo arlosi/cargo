@@ -522,10 +522,10 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
         Work::new(move |_| write_fingerprint(&loc, &fingerprint))
     };
 
-    let write_finterprint_and_cache =
+    let write_fingerprint_and_cache =
         write_fingerprint.then(cache_artifact(cx, &unit, fingerprint2)?);
 
-    Ok(Job::new_dirty(write_finterprint_and_cache, dirty_reason))
+    Ok(Job::new_dirty(write_fingerprint_and_cache, dirty_reason))
 }
 
 /// Store the compiled artifact in the cache.
@@ -1164,6 +1164,12 @@ impl Fingerprint {
                     self.fs_status = FsStatus::StaleDepFingerprint {
                         name: dep.name.clone(),
                     };
+
+                    // B4PR: remove this tracing
+                    let dep_name = &dep.name;
+                    tracing::debug!(
+                        "Dependency '{dep_name:?}' is stale; therefore this package '{pkg_root:?}' is stale"
+                    );
                     return Ok(());
                 }
             };
@@ -1190,6 +1196,10 @@ impl Fingerprint {
                 "max dep mtime for {:?} is {:?} {}",
                 pkg_root, dep_path, dep_mtime
             );
+            tracing::debug!(
+                "max dep mtime for {pkg_root:?} is {dep_path:?} {dep_mtime}"
+            );
+
 
             // If the dependency is newer than our own output then it was
             // recompiled previously. We transitively become stale ourselves in
@@ -1202,6 +1212,10 @@ impl Fingerprint {
                 info!(
                     "dependency on `{}` is newer than we are {} > {} {:?}",
                     dep.name, dep_mtime, max_mtime, pkg_root
+                );
+
+                tracing::debug!(
+                    "Setting '{pkg_root:?}' fs_status to StaleDependency"
                 );
 
                 self.fs_status = FsStatus::StaleDependency {
@@ -1363,6 +1377,13 @@ impl StaleItem {
 fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerprint>> {
     // This function is slammed quite a lot, so the result is memoized.
     if let Some(s) = cx.fingerprints.get(unit) {
+
+        // B4PR: remove this tracing
+        let pkg_root = unit.pkg.root();
+        tracing::debug!(
+            "Calling fingerprint::calculate for pkg '{pkg_root:?}'"
+        );
+
         return Ok(Arc::clone(s));
     }
     let mut fingerprint = if unit.mode.is_run_custom_build() {
@@ -1384,6 +1405,13 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
         cargo_exe,
         cx.bcx.config,
     )?;
+
+    // B4PR: remove this tracing
+    let pkg_root = unit.pkg.root();
+    let fs_status = &fingerprint.fs_status;
+    tracing::debug!(
+        "'{pkg_root:?}' has fs_status {fs_status:?}"
+    );
 
     if let FsStatus::UpToDate{mtimes: _} = fingerprint.fs_status {
         // we're good, carry on
@@ -1809,7 +1837,10 @@ fn compare_old_fingerprint(
     if matches!(new_fingerprint.fs_status, FsStatus::LoadedFromCache) {
         // Skip reading the old fingerprint if we loaded from the cache.
         // TODO: is this the correct approach
-        debug!("skipping fingerprint comparison because cache was used");
+        debug!("skipping fingerprint comparison because cache was used; writing fingerprint file because none was found");
+
+        write_fingerprint(old_hash_path, new_fingerprint)?;
+
         return Ok(None);
     }
 

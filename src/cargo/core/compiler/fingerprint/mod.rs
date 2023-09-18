@@ -1373,43 +1373,48 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
         calculate_normal(cx, unit)?
     };
 
-    let all_deps = cx
-        .all_unit_deps(&unit)
-        .iter()
-        .map(|ud| (ud.unit.pkg.package_id(), ud.unit.target.kind().clone()))
-        .collect::<Vec<_>>();
-    let use_cache = match cx.artifact_cache.get(
-        &unit.pkg.package_id(),
-        &fingerprint,
-        unit.target.kind(),
-        &all_deps,
-        &cx.outputs(unit)?,
-    ) {
-        Ok(val) => val,
-        Err(e) => {
-            tracing::warn!(
-                "failed to read {pkg} from cache: {e}",
-                pkg = unit.pkg.package_id()
-            );
-            false
-        }
-    };
+    // Check the filesystem to see if this fingerprint has been locally built already.
+    // Update the fingerprint.fs_status field with the results of this check.
+    let target_root = target_root(cx);
+    let cargo_exe = cx.bcx.config.cargo_exe()?;
+    fingerprint.check_filesystem(
+        &mut cx.mtime_cache,
+        unit.pkg.root(),
+        &target_root,
+        cargo_exe,
+        cx.bcx.config,
+    )?;
 
-    if use_cache {
-        fingerprint.fs_status = FsStatus::LoadedFromCache;
-        cx.bcx.config.shell().status("Cached", &unit.pkg)?;
+    if let FsStatus::UpToDate{mtimes: _} = fingerprint.fs_status {
+        // we're good, carry on
     } else {
-        // After we built the initial `Fingerprint` be sure to update the
-        // `fs_status` field of it.
-        let target_root = target_root(cx);
-        let cargo_exe = cx.bcx.config.cargo_exe()?;
-        fingerprint.check_filesystem(
-            &mut cx.mtime_cache,
-            unit.pkg.root(),
-            &target_root,
-            cargo_exe,
-            cx.bcx.config,
-        )?;
+        // check shared cache
+        let all_deps = cx
+            .all_unit_deps(&unit)
+            .iter()
+            .map(|ud| (ud.unit.pkg.package_id(), ud.unit.target.kind().clone()))
+            .collect::<Vec<_>>();
+        let use_cache = match cx.artifact_cache.get(
+            &unit.pkg.package_id(),
+            &fingerprint,
+            unit.target.kind(),
+            &all_deps,
+            &cx.outputs(unit)?,
+        ) {
+            Ok(val) => val,
+            Err(e) => {
+                tracing::warn!(
+                    "failed to read {pkg} from cache: {e}",
+                    pkg = unit.pkg.package_id()
+                );
+                false
+            }
+        };
+
+        if use_cache {
+            fingerprint.fs_status = FsStatus::LoadedFromCache;
+            cx.bcx.config.shell().status("Cached", &unit.pkg)?;
+        }
     }
 
     let fingerprint = Arc::new(fingerprint);

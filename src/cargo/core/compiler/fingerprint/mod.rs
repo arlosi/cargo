@@ -369,7 +369,7 @@ use filetime::FileTime;
 use serde::de;
 use serde::ser;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::core::compiler::unit_graph::UnitDep;
 use crate::core::Package;
@@ -412,7 +412,7 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
     // Figure out if this unit is up to date. After calculating the fingerprint
     // compare it to an old version, if any, and attempt to print diagnostic
     // information about failed comparisons to aid in debugging.
-    let fingerprint = calculate(cx, unit)?;
+    let fingerprint = calculate(&loc, cx, unit)?;
     let fingerprint2 = fingerprint.clone();
     let mtime_on_use = cx.bcx.config.cli_unstable().mtime_on_use;
     let compare = compare_old_fingerprint(&loc, &*fingerprint, mtime_on_use);
@@ -1105,6 +1105,7 @@ impl Fingerprint {
     /// it to `UpToDate` if it can.
     fn check_filesystem(
         &mut self,
+        loc: &Path,
         mtime_cache: &mut HashMap<PathBuf, FileTime>,
         pkg_root: &Path,
         target_root: &Path,
@@ -1165,11 +1166,6 @@ impl Fingerprint {
                         name: dep.name.clone(),
                     };
 
-                    // B4PR: remove this tracing
-                    let dep_name = &dep.name;
-                    tracing::debug!(
-                        "Dependency '{dep_name:?}' is stale; therefore this package '{pkg_root:?}' is stale"
-                    );
                     return Ok(());
                 }
             };
@@ -1228,17 +1224,26 @@ impl Fingerprint {
             }
         }
 
-        // If we reached this far then all dependencies are up to date. Check
-        // all our `LocalFingerprint` information to see if we have any stale
-        // files for this package itself. If we do find something log a helpful
-        // message and bail out so we stay stale.
-        for local in self.local.get_mut().unwrap().iter() {
-            if let Some(item) =
-                local.find_stale_item(mtime_cache, pkg_root, target_root, cargo_exe, config)?
-            {
-                item.log();
-                self.fs_status = FsStatus::StaleItem(item);
-                return Ok(());
+        // If we reached this far then all dependencies are up to date.
+        // Check if there is a `cache` marker file indicating that this came from cache.
+        // If so, we will not check the local fingerprint, instead relying on the source fingerprints.
+        let cached_marker_loc = loc.with_extension("cached");
+        if std::fs::metadata(&cached_marker_loc).is_ok() {
+            // Intentionally ignore local fingerprint altogether.
+            trace!("fingerprint::check_filesystem: cached marker found at {cached_marker_loc:?}");
+        } else {
+            trace!("fingerprint::check_filesystem: cached marker NOT found at {cached_marker_loc:?}");
+            // Check all our `LocalFingerprint` information to see if we have any stale
+            // files for this package itself. If we do find something log a helpful
+            // message and bail out so we stay stale.
+            for local in self.local.get_mut().unwrap().iter() {
+                if let Some(item) =
+                    local.find_stale_item(mtime_cache, pkg_root, target_root, cargo_exe, config)?
+                {
+                    item.log();
+                    self.fs_status = FsStatus::StaleItem(item);
+                    return Ok(());
+                }
             }
         }
 
@@ -1301,7 +1306,8 @@ impl hash::Hash for Fingerprint {
 
 impl DepFingerprint {
     fn new(cx: &mut Context<'_, '_>, parent: &Unit, dep: &UnitDep) -> CargoResult<DepFingerprint> {
-        let fingerprint = calculate(cx, &dep.unit)?;
+        let loc = cx.files().fingerprint_dir(&dep.unit);
+        let fingerprint = calculate(&loc, cx, &dep.unit)?;
         // We need to be careful about what we hash here. We have a goal of
         // supporting renaming a project directory and not rebuilding
         // everything. To do that, however, we need to make sure that the cwd
@@ -1374,16 +1380,12 @@ impl StaleItem {
 ///
 /// Information like file modification time is only calculated for path
 /// dependencies.
-fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerprint>> {
+/// 
+/// After completion, the Fingerprint will have an updated fs_status that is correct
+/// for its local filesystem, and possibly shared cache, state.
+fn calculate(loc: &Path, cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerprint>> {
     // This function is slammed quite a lot, so the result is memoized.
     if let Some(s) = cx.fingerprints.get(unit) {
-
-        // B4PR: remove this tracing
-        let pkg_root = unit.pkg.root();
-        tracing::debug!(
-            "Calling fingerprint::calculate for pkg '{pkg_root:?}'"
-        );
-
         return Ok(Arc::clone(s));
     }
     let mut fingerprint = if unit.mode.is_run_custom_build() {
@@ -1399,6 +1401,7 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
     let target_root = target_root(cx);
     let cargo_exe = cx.bcx.config.cargo_exe()?;
     fingerprint.check_filesystem(
+        loc,
         &mut cx.mtime_cache,
         unit.pkg.root(),
         &target_root,
@@ -1406,12 +1409,8 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
         cx.bcx.config,
     )?;
 
-    // B4PR: remove this tracing
-    let pkg_root = unit.pkg.root();
-    let fs_status = &fingerprint.fs_status;
-    tracing::debug!(
-        "'{pkg_root:?}' has fs_status {fs_status:?}"
-    );
+    let status = &fingerprint.fs_status;
+    trace!("fingerprint::calculate: after check_filesystem, fingerprint status is {status:?}");
 
     if let FsStatus::UpToDate{mtimes: _} = fingerprint.fs_status {
         // we're good, carry on
@@ -1422,7 +1421,7 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
             .iter()
             .map(|ud| (ud.unit.pkg.package_id(), ud.unit.target.kind().clone()))
             .collect::<Vec<_>>();
-        let use_cache = match cx.artifact_cache.get(
+        let cache_was_hit = match cx.artifact_cache.get(
             &unit.pkg.package_id(),
             &fingerprint,
             unit.target.kind(),
@@ -1439,9 +1438,12 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
             }
         };
 
-        if use_cache {
+        if cache_was_hit {
             fingerprint.fs_status = FsStatus::LoadedFromCache;
             cx.bcx.config.shell().status("Cached", &unit.pkg)?;
+
+            // and replace the fingerprint's local dependencies with a precalculated "Cached" entry
+
         }
     }
 
@@ -1834,14 +1836,17 @@ fn compare_old_fingerprint(
     new_fingerprint: &Fingerprint,
     mtime_on_use: bool,
 ) -> CargoResult<Option<DirtyReason>> {
-    if matches!(new_fingerprint.fs_status, FsStatus::LoadedFromCache) {
-        // Skip reading the old fingerprint if we loaded from the cache.
-        // TODO: is this the correct approach
-        debug!("skipping fingerprint comparison because cache was used; writing fingerprint file because none was found");
+    // If the new fingerprint was loaded from cache and there is no fingerprint file locally yet, write one.
+    if matches!(new_fingerprint.fs_status, FsStatus::LoadedFromCache) && std::fs::metadata(old_hash_path).is_err() {
+        debug!("fingerprint::compare_old_fingerprint: cache was hit but no fingerprint file exists; writing fingerprint file and cached marker file");
 
         write_fingerprint(old_hash_path, new_fingerprint)?;
 
-        return Ok(None);
+        // Write out cached marker file so that when we read back from target dir, we know that
+        // we need not look for the local "deps-[dependency]" fingerprint files.
+        let cached_marker_file_path = old_hash_path.parent().unwrap().with_extension("cached"); 
+        trace!("fingerprint::compare_old_fingerprint: wrote cached marker file to {cached_marker_file_path:?}");
+        std::fs::write(&cached_marker_file_path, "cached")?;
     }
 
     let old_fingerprint_short = paths::read(old_hash_path)?;

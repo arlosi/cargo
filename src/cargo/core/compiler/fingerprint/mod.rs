@@ -1441,9 +1441,6 @@ fn calculate(loc: &Path, cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<A
         if cache_was_hit {
             fingerprint.fs_status = FsStatus::LoadedFromCache;
             cx.bcx.config.shell().status("Cached", &unit.pkg)?;
-
-            // and replace the fingerprint's local dependencies with a precalculated "Cached" entry
-
         }
     }
 

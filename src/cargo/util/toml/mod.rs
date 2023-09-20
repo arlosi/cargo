@@ -20,7 +20,7 @@ use url::Url;
 
 use crate::core::compiler::{CompileKind, CompileTarget};
 use crate::core::dependency::{Artifact, ArtifactTarget, DepKind};
-use crate::core::manifest::{ManifestMetadata, TargetSourcePath, Warnings};
+use crate::core::manifest::{ManifestMetadata, TargetSourcePath, Warnings, SharedUserCacheConfig};
 use crate::core::resolver::ResolveBehavior;
 use crate::core::{find_workspace_root, resolve_relative_path, CliUnstable};
 use crate::core::{Dependency, Manifest, PackageId, Summary, Target};
@@ -340,6 +340,7 @@ pub struct TomlManifest {
     workspace: Option<TomlWorkspace>,
     badges: Option<MaybeWorkspaceBtreeMap>,
     lints: Option<MaybeWorkspaceLints>,
+    shared_user_cache: Option<SharedUserCacheConfig>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -515,6 +516,7 @@ pub struct TomlProfile {
     pub strip: Option<StringOrBool>,
     // Note that `rustflags` is used for the cargo-feature `profile_rustflags`
     pub rustflags: Option<Vec<InternedString>>,
+    // Note that `
     // These two fields must be last because they are sub-tables, and TOML
     // requires all non-tables to be listed first.
     pub package: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
@@ -1753,6 +1755,7 @@ impl TomlManifest {
             badges: self.badges.clone(),
             cargo_features: self.cargo_features.clone(),
             lints: self.lints.clone(),
+            shared_user_cache: self.shared_user_cache.clone(),
         });
 
         fn map_deps(
@@ -2452,6 +2455,7 @@ impl TomlManifest {
                 workspace: false,
                 lints,
             }),
+            shared_user_cache: me.shared_user_cache.clone(),
         };
         let mut manifest = Manifest::new(
             summary,
@@ -2478,6 +2482,7 @@ impl TomlManifest {
             resolve_behavior,
             rustflags,
             embedded,
+            me.shared_user_cache.clone(),
         );
         if package.license_file.is_some() && package.license.is_some() {
             manifest.warnings_mut().add_warning(

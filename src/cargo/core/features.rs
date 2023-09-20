@@ -54,7 +54,7 @@
 //!    include `(unstable)` to note that this is an unstable option.
 //! 2. Where the CLI option is loaded, be sure to call
 //!    [`CliUnstable::fail_if_stable_opt`]. This will return an error if `-Z
-//!    unstable options` was not passed.
+//!    unstable-options` was not passed.
 //!
 //! ## `-Z` options
 //!
@@ -481,6 +481,9 @@ features! {
     // Allow specifying rustflags directly in a profile
     (unstable, profile_rustflags, "", "reference/unstable.html#profile-rustflags-option"),
 
+    // Allow shared user cache to be used
+    (unstable, shared_user_cache, "", "reference/unstable.html#shared-user-cache"),
+
     // Allow specifying rustflags directly in a profile
     (stable, workspace_inheritance, "1.64", "reference/unstable.html#workspace-inheritance"),
 }
@@ -750,6 +753,7 @@ unstable_cli_options!(
     rustdoc_scrape_examples: bool = ("Allows Rustdoc to scrape code examples from reverse-dependencies"),
     script: bool = ("Enable support for single-file, `.rs` packages"),
     separate_nightlies: bool = (HIDDEN),
+    shared_user_cache: bool = ("Enable shared user-level cache for registry crates without build scripts"),
     skip_rustdoc_fingerprint: bool = (HIDDEN),
     target_applies_to_host: bool = ("Enable the `target-applies-to-host` key in the .cargo/config.toml file"),
     unstable_options: bool = ("Allow the usage of unstable options"),
@@ -1126,6 +1130,7 @@ impl CliUnstable {
             "rustdoc-map" => self.rustdoc_map = parse_empty(k, v)?,
             "rustdoc-scrape-examples" => self.rustdoc_scrape_examples = parse_empty(k, v)?,
             "separate-nightlies" => self.separate_nightlies = parse_empty(k, v)?,
+            "shared-user-cache" => self.shared_user_cache = parse_empty(k, v)?,
             "skip-rustdoc-fingerprint" => self.skip_rustdoc_fingerprint = parse_empty(k, v)?,
             "script" => self.script = parse_empty(k, v)?,
             "target-applies-to-host" => self.target_applies_to_host = parse_empty(k, v)?,

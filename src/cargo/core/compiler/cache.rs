@@ -78,7 +78,6 @@ struct Key<'a> {
     package_id: PackageId,
 
     target_kind: &'a TargetKind,
-
 }
 
 impl<'a> Key<'a> {
@@ -124,7 +123,8 @@ impl LocalCache {
             return false;
         }
 
-        if matches!(fingerprint, Some(fingerprint) if fingerprint.rustflags.iter().any(|f| !ALLOWED_RUST_FLAGS.iter().contains(&f.as_str()))) {
+        if matches!(fingerprint, Some(fingerprint) if fingerprint.rustflags.iter().any(|f| !ALLOWED_RUST_FLAGS.iter().contains(&f.as_str())))
+        {
             tracing::debug!("'{package_id}' (as {target_kind:?}) is uncachable: RUSTFLAGS is set");
             return false;
         }

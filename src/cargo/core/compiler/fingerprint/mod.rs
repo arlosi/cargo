@@ -1192,10 +1192,7 @@ impl Fingerprint {
                 "max dep mtime for {:?} is {:?} {}",
                 pkg_root, dep_path, dep_mtime
             );
-            tracing::debug!(
-                "max dep mtime for {pkg_root:?} is {dep_path:?} {dep_mtime}"
-            );
-
+            tracing::debug!("max dep mtime for {pkg_root:?} is {dep_path:?} {dep_mtime}");
 
             // If the dependency is newer than our own output then it was
             // recompiled previously. We transitively become stale ourselves in
@@ -1210,9 +1207,7 @@ impl Fingerprint {
                     dep.name, dep_mtime, max_mtime, pkg_root
                 );
 
-                tracing::debug!(
-                    "Setting '{pkg_root:?}' fs_status to StaleDependency"
-                );
+                tracing::debug!("Setting '{pkg_root:?}' fs_status to StaleDependency");
 
                 self.fs_status = FsStatus::StaleDependency {
                     name: dep.name.clone(),
@@ -1232,7 +1227,9 @@ impl Fingerprint {
             // Intentionally ignore local fingerprint altogether.
             trace!("fingerprint::check_filesystem: cached marker found at {cached_marker_loc:?}");
         } else {
-            trace!("fingerprint::check_filesystem: cached marker NOT found at {cached_marker_loc:?}");
+            trace!(
+                "fingerprint::check_filesystem: cached marker NOT found at {cached_marker_loc:?}"
+            );
             // Check all our `LocalFingerprint` information to see if we have any stale
             // files for this package itself. If we do find something log a helpful
             // message and bail out so we stay stale.
@@ -1380,7 +1377,7 @@ impl StaleItem {
 ///
 /// Information like file modification time is only calculated for path
 /// dependencies.
-/// 
+///
 /// After completion, the Fingerprint will have an updated fs_status that is correct
 /// for its local filesystem, and possibly shared cache, state.
 fn calculate(loc: &Path, cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerprint>> {
@@ -1412,7 +1409,7 @@ fn calculate(loc: &Path, cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<A
     let status = &fingerprint.fs_status;
     trace!("fingerprint::calculate: after check_filesystem, fingerprint status is {status:?}");
 
-    if let FsStatus::UpToDate{mtimes: _} = fingerprint.fs_status {
+    if let FsStatus::UpToDate { mtimes: _ } = fingerprint.fs_status {
         // we're good, carry on
     } else {
         // check shared cache
@@ -1834,14 +1831,16 @@ fn compare_old_fingerprint(
     mtime_on_use: bool,
 ) -> CargoResult<Option<DirtyReason>> {
     // If the new fingerprint was loaded from cache and there is no fingerprint file locally yet, write one.
-    if matches!(new_fingerprint.fs_status, FsStatus::LoadedFromCache) && std::fs::metadata(old_hash_path).is_err() {
+    if matches!(new_fingerprint.fs_status, FsStatus::LoadedFromCache)
+        && std::fs::metadata(old_hash_path).is_err()
+    {
         debug!("fingerprint::compare_old_fingerprint: cache was hit but no fingerprint file exists; writing fingerprint file and cached marker file");
 
         write_fingerprint(old_hash_path, new_fingerprint)?;
 
         // Write out cached marker file so that when we read back from target dir, we know that
         // we need not look for the local "deps-[dependency]" fingerprint files.
-        let cached_marker_file_path = old_hash_path.parent().unwrap().with_extension("cached"); 
+        let cached_marker_file_path = old_hash_path.parent().unwrap().with_extension("cached");
         trace!("fingerprint::compare_old_fingerprint: wrote cached marker file to {cached_marker_file_path:?}");
         std::fs::write(&cached_marker_file_path, "cached")?;
     }

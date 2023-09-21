@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{PackageId, TargetKind};
@@ -48,6 +49,12 @@ const CACHE_VERSION: u64 = 1;
 /// Default sub-directory for the cache.
 const CACHE_SUBDIRECTORY: &'static str = "artifact_cache";
 
+const ALLOWED_RUST_FLAGS: [&'static str; 3] = [
+    "-C",
+    "-Ctarget-feature=+crt-static",
+    "target-feature=+crt-static",
+];
+
 struct LocalCache {
     cache_directory: PathBuf,
 }
@@ -66,10 +73,12 @@ struct Key<'a> {
     target: u64,
     profile: u64,
     config: u64,
+    rustflags: &'a [String],
 
     package_id: PackageId,
 
     target_kind: &'a TargetKind,
+
 }
 
 impl<'a> Key<'a> {
@@ -85,6 +94,7 @@ impl<'a> Key<'a> {
             target: fingerprint.target,
             profile: fingerprint.profile,
             config: fingerprint.config,
+            rustflags: &fingerprint.rustflags,
             package_id,
             target_kind,
         }
@@ -114,7 +124,7 @@ impl LocalCache {
             return false;
         }
 
-        if matches!(fingerprint, Some(fingerprint) if !fingerprint.rustflags.is_empty()) {
+        if matches!(fingerprint, Some(fingerprint) if fingerprint.rustflags.iter().any(|f| !ALLOWED_RUST_FLAGS.iter().contains(&f.as_str()))) {
             tracing::debug!("'{package_id}' (as {target_kind:?}) is uncachable: RUSTFLAGS is set");
             return false;
         }

@@ -111,7 +111,8 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
         };
 
         let shared_user_cache_config_opt_result = bcx.config.shared_user_cache_config();
-        let artifact_cache_opt = shared_user_cache_config_opt_result?.map(|config| cache::create_cache(config));
+        let artifact_cache_opt =
+            shared_user_cache_config_opt_result?.map(|config| cache::create_cache(config));
 
         Ok(Self {
             bcx,

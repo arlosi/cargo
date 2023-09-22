@@ -111,7 +111,8 @@ fn config_without_arg_on_nightly_err() {
 
     p.cargo("build")
         .masquerade_as_nightly_cargo(&["shared-user-cache"])
-        .with_stderr("\
+        .with_stderr(
+            "\
 [UPDATING] [..]
 [DOWNLOADING] crates ...
 [DOWNLOADED] [..]
@@ -119,6 +120,7 @@ fn config_without_arg_on_nightly_err() {
 [COMPILING] [..]
 [COMPILING] [..]
 [COMPILING] [..]
-[FINISHED] [..]")
+[FINISHED] [..]",
+        )
         .run();
 }

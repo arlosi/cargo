@@ -11,8 +11,8 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{PackageId, TargetKind};
-use crate::CargoResult;
 use crate::util::config::SharedUserCacheConfig;
+use crate::CargoResult;
 
 use super::context::OutputFile;
 use super::fingerprint::Fingerprint;
@@ -40,7 +40,9 @@ pub trait Cache: Send + Sync {
 
 pub fn create_cache(shared_user_cache_config: &SharedUserCacheConfig) -> Arc<dyn Cache> {
     Arc::new(LocalCache {
-        cache_directory: home::cargo_home().unwrap().join(&shared_user_cache_config.path),
+        cache_directory: home::cargo_home()
+            .unwrap()
+            .join(&shared_user_cache_config.path),
     })
 }
 

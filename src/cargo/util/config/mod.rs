@@ -158,7 +158,7 @@ pub struct CredentialCacheValue {
 /// Cargo configuration for the shared user cache.
 ///
 /// This is an unstable feature and may have evolving configuration.
-/// See https://github.com/marketplace/actions/rust-cache for a github version of a shared cache
+/// See <https://github.com/marketplace/actions/rust-cache> for a github version of a shared cache
 /// with possibly applicable configuration options.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Deserialize)]
 pub struct SharedUserCacheConfig {
@@ -1784,7 +1784,8 @@ impl Config {
         // Check unstable.
         let shared_user_cache_is_enabled = self.cli_unstable().shared_user_cache;
 
-        let result = self.shared_user_cache_config
+        let result = self
+            .shared_user_cache_config
             .try_borrow_with(|| self.get::<SharedUserCacheConfig>("shared_user_cache"));
 
         if shared_user_cache_is_enabled {

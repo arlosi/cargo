@@ -266,7 +266,7 @@ impl Cache for LocalCache {
             )
             .context("copy build output to cache")?;
 
-            let integrety = writer.commit().context("Commit data to cache")?;
+            let integrity = writer.commit().context("Commit data to cache")?;
             metadata.files.insert(
                 output
                     .path
@@ -275,7 +275,7 @@ impl Cache for LocalCache {
                     .to_str()
                     .unwrap()
                     .to_string(),
-                integrety,
+                integrity,
             );
         }
 

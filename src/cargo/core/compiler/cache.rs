@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::{PackageId, TargetKind};
 use crate::CargoResult;
+use crate::util::config::SharedUserCacheConfig;
 
 use super::context::OutputFile;
 use super::fingerprint::Fingerprint;
@@ -37,17 +38,14 @@ pub trait Cache: Send + Sync {
     ) -> CargoResult<()>;
 }
 
-pub fn create_cache() -> Arc<dyn Cache> {
+pub fn create_cache(shared_user_cache_config: &SharedUserCacheConfig) -> Arc<dyn Cache> {
     Arc::new(LocalCache {
-        cache_directory: home::cargo_home().unwrap().join(CACHE_SUBDIRECTORY),
+        cache_directory: home::cargo_home().unwrap().join(&shared_user_cache_config.path),
     })
 }
 
 /// Current cache version.
 const CACHE_VERSION: u64 = 1;
-
-/// Default sub-directory for the cache.
-const CACHE_SUBDIRECTORY: &'static str = "artifact_cache";
 
 const ALLOWED_RUST_FLAGS: [&'static str; 3] = [
     "-C",

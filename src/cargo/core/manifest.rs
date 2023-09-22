@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use semver::Version;
-use serde::{ser, Deserialize};
+use serde::ser;
 use serde::Serialize;
 use url::Url;
 
@@ -65,7 +65,6 @@ pub struct Manifest {
     resolve_behavior: Option<ResolveBehavior>,
     lint_rustflags: Vec<String>,
     embedded: bool,
-    shared_user_cache: Option<SharedUserCacheConfig>,
 }
 
 /// When parsing `Cargo.toml`, some warnings should silenced
@@ -89,17 +88,6 @@ pub struct VirtualManifest {
     warnings: Warnings,
     features: Features,
     resolve_behavior: Option<ResolveBehavior>,
-}
-
-/// Cargo configuration for the shared user cache.
-/// 
-/// This is an unstable feature and may have evolving configuration.
-/// See https://github.com/marketplace/actions/rust-cache for a github version of a shared cache
-/// with possibly applicable configuration options.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub struct SharedUserCacheConfig {
-    /// Absolute path to the shared user cache directory on the local filesystem.
-    pub path: PathBuf,
 }
 
 /// General metadata about a package which is just blindly uploaded to the
@@ -421,7 +409,6 @@ impl Manifest {
         resolve_behavior: Option<ResolveBehavior>,
         lint_rustflags: Vec<String>,
         embedded: bool,
-        shared_user_cache: Option<SharedUserCacheConfig>,
     ) -> Manifest {
         Manifest {
             summary,
@@ -449,7 +436,6 @@ impl Manifest {
             resolve_behavior,
             lint_rustflags,
             embedded,
-            shared_user_cache,
         }
     }
 
@@ -606,10 +592,6 @@ impl Manifest {
             .into_path_unlocked()
             .join(".metabuild")
             .join(format!("metabuild-{}-{}.rs", self.name(), hash))
-    }
-
-    pub fn shared_user_cache(&self) -> Option<&SharedUserCacheConfig> {
-        self.shared_user_cache.as_ref()
     }
 }
 

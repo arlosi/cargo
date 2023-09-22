@@ -522,20 +522,23 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
         Work::new(move |_| write_fingerprint(&loc, &fingerprint))
     };
 
-    let write_fingerprint_and_cache =
-        write_fingerprint.then(cache_artifact(cx, &unit, fingerprint2)?);
+    let work = if cx.artifact_cache_opt.is_some() {
+        write_fingerprint.then(cache_artifact(cx, &unit, fingerprint2)?)
+    } else {
+        write_fingerprint
+    };
 
-    Ok(Job::new_dirty(write_fingerprint_and_cache, dirty_reason))
+    Ok(Job::new_dirty(work, dirty_reason))
 }
 
 /// Store the compiled artifact in the cache.
-fn cache_artifact(
-    cx: &mut Context<'_, '_>,
+fn cache_artifact<'cx>(
+    cx: &'cx mut Context<'_, '_>,
     unit: &Unit,
     fingerprint: Arc<Fingerprint>,
 ) -> CargoResult<Work> {
     let outputs = cx.outputs(&unit)?;
-    let cache = cx.artifact_cache.clone();
+    let cache = cx.artifact_cache_opt.as_ref().unwrap().clone();
     let package_id = unit.pkg.package_id();
     let target_kind = unit.target.kind().clone();
     let all_deps = cx
@@ -1414,14 +1417,14 @@ fn calculate(loc: &Path, cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<A
 
     if let FsStatus::UpToDate{mtimes: _} = fingerprint.fs_status {
         // we're good, carry on
-    } else {
+    } else if let Some(artifact_cache) = &cx.artifact_cache_opt {
         // check shared cache
         let all_deps = cx
             .all_unit_deps(&unit)
             .iter()
             .map(|ud| (ud.unit.pkg.package_id(), ud.unit.target.kind().clone()))
             .collect::<Vec<_>>();
-        let cache_was_hit = match cx.artifact_cache.get(
+        let cache_was_hit = match artifact_cache.get(
             &unit.pkg.package_id(),
             &fingerprint,
             unit.target.kind(),

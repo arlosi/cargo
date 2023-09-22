@@ -86,8 +86,8 @@ pub struct Context<'a, 'cfg> {
     /// because it is continuously updated as the job progresses.
     pub failed_scrape_units: Arc<Mutex<HashSet<Metadata>>>,
 
-    /// Artifact caching provider.
-    pub artifact_cache: Arc<dyn Cache>,
+    /// Artifact caching provider, if any.
+    pub artifact_cache_opt: Option<Arc<dyn Cache>>,
 }
 
 impl<'a, 'cfg> Context<'a, 'cfg> {
@@ -110,6 +110,9 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             }
         };
 
+        let shared_user_cache_config_opt_result = bcx.config.shared_user_cache_config();
+        let artifact_cache_opt = shared_user_cache_config_opt_result?.map(|config| cache::create_cache(config));
+
         Ok(Self {
             bcx,
             compilation: Compilation::new(bcx)?,
@@ -126,7 +129,7 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             lto: HashMap::new(),
             metadata_for_doc_units: HashMap::new(),
             failed_scrape_units: Arc::new(Mutex::new(HashSet::new())),
-            artifact_cache: cache::create_cache(),
+            artifact_cache_opt,
         })
     }
 

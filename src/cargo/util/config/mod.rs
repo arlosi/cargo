@@ -155,6 +155,17 @@ pub struct CredentialCacheValue {
     pub operation_independent: bool,
 }
 
+/// Cargo configuration for the shared user cache.
+///
+/// This is an unstable feature and may have evolving configuration.
+/// See https://github.com/marketplace/actions/rust-cache for a github version of a shared cache
+/// with possibly applicable configuration options.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Deserialize)]
+pub struct SharedUserCacheConfig {
+    /// Relative path to the shared user cache directory in the current user's CARGO_HOME.
+    pub path: String,
+}
+
 /// Configuration information for cargo. This is not specific to a build, it is information
 /// relating to cargo itself.
 #[derive(Debug)]
@@ -225,6 +236,7 @@ pub struct Config {
     doc_extern_map: LazyCell<RustdocExternMap>,
     progress_config: ProgressConfig,
     env_config: LazyCell<EnvConfig>,
+    shared_user_cache_config: LazyCell<SharedUserCacheConfig>,
     /// This should be false if:
     /// - this is an artifact of the rustc distribution process for "stable" or for "beta"
     /// - this is an `#[test]` that does not opt in with `enable_nightly_features`
@@ -314,6 +326,7 @@ impl Config {
             doc_extern_map: LazyCell::new(),
             progress_config: ProgressConfig::default(),
             env_config: LazyCell::new(),
+            shared_user_cache_config: LazyCell::new(),
             nightly_features_allowed: matches!(&*features::channel(), "nightly" | "dev"),
             ws_roots: RefCell::new(HashMap::new()),
         }
@@ -1765,6 +1778,26 @@ impl Config {
 
     pub fn progress_config(&self) -> &ProgressConfig {
         &self.progress_config
+    }
+
+    pub fn shared_user_cache_config(&self) -> CargoResult<Option<&SharedUserCacheConfig>> {
+        // Check unstable.
+        let shared_user_cache_is_enabled = self.cli_unstable().shared_user_cache;
+
+        let result = self.shared_user_cache_config
+            .try_borrow_with(|| self.get::<SharedUserCacheConfig>("shared_user_cache"));
+
+        if shared_user_cache_is_enabled {
+            if let Ok(result) = result {
+                Ok(Some(result))
+            } else {
+                // this should have been defined
+                Err(anyhow::anyhow!("-Z shared-user-cache is enabled, but no [shared_user_cache] configuration was defined"))
+            }
+        } else {
+            // Ignore the configuration since -Z shared-user-cache is disabled
+            Ok(None)
+        }
     }
 
     pub fn env_config(&self) -> CargoResult<&EnvConfig> {

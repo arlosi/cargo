@@ -75,7 +75,11 @@ fn arg_without_config_on_nightly_err() {
     p.cargo("build -Z shared-user-cache")
         .masquerade_as_nightly_cargo(&["shared-user-cache"])
         .with_stderr(
-            "error: -Z shared-user-cache is enabled, but no [shared_user_cache] configuration was defined"
+            "\
+[CACHED] bar v0.1.0
+[CACHED] baz v0.2.0
+[COMPILING] foo v0.0.1 [..]
+[FINISHED] [..]",
         )
         .run_expect_error();
 }

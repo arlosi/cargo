@@ -141,7 +141,7 @@ enum WhyLoad {
     /// Indirect configs loaded via [`config-include`] are also seen as from cli args,
     /// if the initial config is being loaded from cli.
     ///
-    /// [`config-include`]: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#config-include
+    /// [`config-include`]: <https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#config-include>
     Cli,
     /// Loaded due to config file discovery.
     FileDiscovery,
@@ -1780,24 +1780,25 @@ impl Config {
         &self.progress_config
     }
 
-    pub fn shared_user_cache_config(&self) -> CargoResult<Option<&SharedUserCacheConfig>> {
+    pub fn shared_user_cache_config(&self) -> Option<&SharedUserCacheConfig> {
         // Check unstable.
         let shared_user_cache_is_enabled = self.cli_unstable().shared_user_cache;
 
-        let result = self
-            .shared_user_cache_config
-            .try_borrow_with(|| self.get::<SharedUserCacheConfig>("shared_user_cache"));
+        let result: CargoResult<&SharedUserCacheConfig> =
+            self.shared_user_cache_config.try_borrow_with(|| {
+                self.get::<SharedUserCacheConfig>("shared_user_cache")
+                    .or_else(|_| {
+                        Ok(SharedUserCacheConfig {
+                            path: "artifact_cache".to_owned(),
+                        })
+                    })
+            });
 
         if shared_user_cache_is_enabled {
-            if let Ok(result) = result {
-                Ok(Some(result))
-            } else {
-                // this should have been defined
-                Err(anyhow::anyhow!("-Z shared-user-cache is enabled, but no [shared_user_cache] configuration was defined"))
-            }
+            Some(result.unwrap())
         } else {
             // Ignore the configuration since -Z shared-user-cache is disabled
-            Ok(None)
+            None
         }
     }
 

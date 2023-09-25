@@ -39,10 +39,15 @@ pub trait Cache: Send + Sync {
 }
 
 pub fn create_cache(shared_user_cache_config: &SharedUserCacheConfig) -> Arc<dyn Cache> {
+    let mut path = PathBuf::new();
+    path.push(&shared_user_cache_config.path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        home::cargo_home().unwrap().join(&path)
+    };
     Arc::new(LocalCache {
-        cache_directory: home::cargo_home()
-            .unwrap()
-            .join(&shared_user_cache_config.path),
+        cache_directory: path,
     })
 }
 

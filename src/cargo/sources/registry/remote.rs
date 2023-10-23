@@ -6,6 +6,7 @@ use crate::sources::git::fetch::RemoteKind;
 use crate::sources::registry::download;
 use crate::sources::registry::MaybeLock;
 use crate::sources::registry::{LoadResponse, RegistryConfig, RegistryData};
+use crate::util::cache_lock::CacheLockMode;
 use crate::util::errors::CargoResult;
 use crate::util::interning::InternedString;
 use crate::util::{Config, Filesystem};
@@ -59,7 +60,7 @@ pub struct RemoteRegistry<'cfg> {
     /// A Git [tree object] to help this registry find crate metadata from the
     /// underlying Git repository.
     ///
-    /// This is stored here to prevent Git from repeatly creating a tree object
+    /// This is stored here to prevent Git from repeatedly creating a tree object
     /// during each call into `load()`.
     ///
     /// [tree object]: https://git-scm.com/book/en/v2/Git-Internals-Git-Objects#_tree_objects
@@ -70,7 +71,7 @@ pub struct RemoteRegistry<'cfg> {
     head: Cell<Option<git2::Oid>>,
     /// This stores sha value of the current HEAD commit for convenience.
     current_sha: Cell<Option<InternedString>>,
-    /// Whether this registry needs to update package informations.
+    /// Whether this registry needs to update package information.
     ///
     /// See [`RemoteRegistry::mark_updated`] on how to make sure a registry
     /// index is updated only once per session.
@@ -104,7 +105,9 @@ impl<'cfg> RemoteRegistry<'cfg> {
     fn repo(&self) -> CargoResult<&git2::Repository> {
         self.repo.try_borrow_with(|| {
             trace!("acquiring registry index lock");
-            let path = self.config.assert_package_cache_locked(&self.index_path);
+            let path = self
+                .config
+                .assert_package_cache_locked(CacheLockMode::DownloadExclusive, &self.index_path);
 
             match git2::Repository::open(&path) {
                 Ok(repo) => Ok(repo),
@@ -216,7 +219,8 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
     }
 
     fn assert_index_locked<'a>(&self, path: &'a Filesystem) -> &'a Path {
-        self.config.assert_package_cache_locked(path)
+        self.config
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, path)
     }
 
     /// Read the general concept for `load()` on [`RegistryData::load`].
@@ -269,9 +273,8 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
             }
 
             let object = entry.to_object(repo)?;
-            let blob = match object.as_blob() {
-                Some(blob) => blob,
-                None => anyhow::bail!("path `{}` is not a blob in the git repo", path.display()),
+            let Some(blob) = object.as_blob() else {
+                anyhow::bail!("path `{}` is not a blob in the git repo", path.display())
             };
 
             Ok(LoadResponse::Data {
@@ -303,14 +306,12 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
     fn config(&mut self) -> Poll<CargoResult<Option<RegistryConfig>>> {
         debug!("loading config");
         self.prepare()?;
-        self.config.assert_package_cache_locked(&self.index_path);
+        self.config
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, &self.index_path);
         match ready!(self.load(Path::new(""), Path::new(RegistryConfig::NAME), None)?) {
             LoadResponse::Data { raw_data, .. } => {
                 trace!("config loaded");
-                let mut cfg: RegistryConfig = serde_json::from_slice(&raw_data)?;
-                if !self.config.cli_unstable().registry_auth {
-                    cfg.auth_required = false;
-                }
+                let cfg: RegistryConfig = serde_json::from_slice(&raw_data)?;
                 Poll::Ready(Ok(Some(cfg)))
             }
             _ => Poll::Ready(Ok(None)),
@@ -350,7 +351,9 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
         self.head.set(None);
         *self.tree.borrow_mut() = None;
         self.current_sha.set(None);
-        let _path = self.config.assert_package_cache_locked(&self.index_path);
+        let _path = self
+            .config
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, &self.index_path);
         if !self.quiet {
             self.config
                 .shell()

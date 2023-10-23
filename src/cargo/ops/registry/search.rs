@@ -6,23 +6,23 @@ use std::cmp;
 use std::iter::repeat;
 
 use anyhow::Context as _;
-use termcolor::Color;
-use termcolor::ColorSpec;
 use url::Url;
 
+use crate::util::style;
 use crate::util::truncate_with_ellipsis;
 use crate::CargoResult;
 use crate::Config;
 
+use super::RegistryOrIndex;
+
 pub fn search(
     query: &str,
     config: &Config,
-    index: Option<String>,
+    reg_or_index: Option<RegistryOrIndex>,
     limit: u32,
-    reg: Option<String>,
 ) -> CargoResult<()> {
     let (mut registry, source_ids) =
-        super::registry(config, None, index.as_deref(), reg.as_deref(), false, None)?;
+        super::registry(config, None, reg_or_index.as_ref(), false, None)?;
     let (crates, total_crates) = registry.search(query, limit).with_context(|| {
         format!(
             "failed to retrieve search results from the registry at {}",
@@ -58,15 +58,12 @@ pub fn search(
         };
         let mut fragments = line.split(query).peekable();
         while let Some(fragment) = fragments.next() {
-            let _ = config.shell().write_stdout(fragment, &ColorSpec::new());
+            let _ = config.shell().write_stdout(fragment, &style::NOP);
             if fragments.peek().is_some() {
-                let _ = config.shell().write_stdout(
-                    query,
-                    &ColorSpec::new().set_bold(true).set_fg(Some(Color::Green)),
-                );
+                let _ = config.shell().write_stdout(query, &style::GOOD);
             }
         }
-        let _ = config.shell().write_stdout("\n", &ColorSpec::new());
+        let _ = config.shell().write_stdout("\n", &style::NOP);
     }
 
     let search_max_limit = 100;
@@ -76,7 +73,7 @@ pub fn search(
                 "... and {} crates more (use --limit N to see more)\n",
                 total_crates - limit
             ),
-            &ColorSpec::new(),
+            &style::NOP,
         );
     } else if total_crates > limit && limit >= search_max_limit {
         let extra = if source_ids.original.is_crates_io() {
@@ -87,7 +84,7 @@ pub fn search(
         };
         let _ = config.shell().write_stdout(
             format_args!("... and {} crates more{}\n", total_crates - limit, extra),
-            &ColorSpec::new(),
+            &style::NOP,
         );
     }
 

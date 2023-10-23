@@ -11,7 +11,7 @@
 //! like what rustc has done[^1]. Also, no one knows if Cargo really needs that.
 //! To be pragmatic, here we list a handful of items you may want to learn:
 //!
-//! * [`BuildContext`] is a static context containg all information you need
+//! * [`BuildContext`] is a static context containing all information you need
 //!   before a build gets started.
 //! * [`Context`] is the center of the world, coordinating a running build and
 //!   collecting information from it.
@@ -19,7 +19,7 @@
 //! * [`fingerprint`] not only defines but also executes a set of rules to
 //!   determine if a re-compile is needed.
 //! * [`job_queue`] is where the parallelism, job scheduling, and communication
-//!   machinary happen between Cargo and the compiler.
+//!   machinery happen between Cargo and the compiler.
 //! * [`layout`] defines and manages output artifacts of a build in the filesystem.
 //! * [`unit_dependencies`] is for building a dependency graph for compilation
 //!   from a result of dependency resolution.
@@ -203,7 +203,6 @@ fn compile<'cfg>(
                 &unit.target,
                 cx.files().message_cache_path(unit),
                 cx.bcx.build_config.message_format,
-                cx.bcx.config.shell().err_supports_color(),
                 unit.show_warnings(bcx.config),
             );
             // Need to link targets on both the dirty and fresh.
@@ -544,12 +543,9 @@ fn link_targets(cx: &mut Context<'_, '_>, unit: &Unit, fresh: bool) -> CargoResu
             if !src.exists() {
                 continue;
             }
-            let dst = match output.hardlink.as_ref() {
-                Some(dst) => dst,
-                None => {
-                    destinations.push(src.clone());
-                    continue;
-                }
+            let Some(dst) = output.hardlink.as_ref() else {
+                destinations.push(src.clone());
+                continue;
             };
             destinations.push(dst.clone());
             paths::link_or_copy(src, dst)?;
@@ -1322,7 +1318,7 @@ fn add_custom_flags(
                     cmd.arg("--check-cfg").arg(check_cfg);
                 }
             }
-            for &(ref name, ref value) in output.env.iter() {
+            for (name, value) in output.env.iter() {
                 cmd.env(name, value);
             }
         }
@@ -1420,8 +1416,6 @@ fn envify(s: &str) -> String {
 struct OutputOptions {
     /// What format we're emitting from Cargo itself.
     format: MessageFormat,
-    /// Whether or not to display messages in color.
-    color: bool,
     /// Where to write the JSON messages to support playback later if the unit
     /// is fresh. The file is created lazily so that in the normal case, lots
     /// of empty files are not created. If this is None, the output will not
@@ -1443,14 +1437,12 @@ struct OutputOptions {
 
 impl OutputOptions {
     fn new(cx: &Context<'_, '_>, unit: &Unit) -> OutputOptions {
-        let color = cx.bcx.config.shell().err_supports_color();
         let path = cx.files().message_cache_path(unit);
         // Remove old cache, ignore ENOENT, which is the common case.
         drop(fs::remove_file(&path));
         let cache_cell = Some((path, LazyCell::new()));
         OutputOptions {
             format: cx.bcx.build_config.message_format,
-            color,
             cache_cell,
             show_diagnostics: true,
             warnings_seen: 0,
@@ -1590,15 +1582,7 @@ fn on_stderr_line_inner(
                 if msg.rendered.ends_with('\n') {
                     msg.rendered.pop();
                 }
-                let rendered = if options.color {
-                    msg.rendered
-                } else {
-                    // Strip only fails if the Writer fails, which is Cursor
-                    // on a Vec, which should never fail.
-                    strip_ansi_escapes::strip(&msg.rendered)
-                        .map(|v| String::from_utf8(v).expect("utf8"))
-                        .expect("strip should never fail")
-                };
+                let rendered = msg.rendered;
                 if options.show_diagnostics {
                     let machine_applicable: bool = msg
                         .children
@@ -1629,9 +1613,7 @@ fn on_stderr_line_inner(
                 other: std::collections::BTreeMap<String, serde_json::Value>,
             }
             if let Ok(mut error) = serde_json::from_str::<CompilerMessage>(compiler_message.get()) {
-                error.rendered = strip_ansi_escapes::strip(&error.rendered)
-                    .map(|v| String::from_utf8(v).expect("utf8"))
-                    .unwrap_or(error.rendered);
+                error.rendered = anstream::adapter::strip_str(&error.rendered).to_string();
                 let new_line = serde_json::to_string(&error)?;
                 let new_msg: Box<serde_json::value::RawValue> = serde_json::from_str(&new_line)?;
                 compiler_message = new_msg;
@@ -1703,13 +1685,11 @@ fn replay_output_cache(
     target: &Target,
     path: PathBuf,
     format: MessageFormat,
-    color: bool,
     show_diagnostics: bool,
 ) -> Work {
     let target = target.clone();
     let mut options = OutputOptions {
         format,
-        color,
         cache_cell: None,
         show_diagnostics,
         warnings_seen: 0,

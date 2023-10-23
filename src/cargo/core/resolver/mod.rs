@@ -71,7 +71,7 @@ use crate::util::config::Config;
 use crate::util::errors::CargoResult;
 use crate::util::network::PollExt;
 use crate::util::profile;
-use crate::util::PartialVersion;
+use crate::util::RustVersion;
 
 use self::context::Context;
 use self::dep_cache::RegistryQueryer;
@@ -139,7 +139,7 @@ pub fn resolve(
     version_prefs: &VersionPreferences,
     config: Option<&Config>,
     check_public_visible_dependencies: bool,
-    mut max_rust_version: Option<PartialVersion>,
+    mut max_rust_version: Option<&RustVersion>,
 ) -> CargoResult<Resolve> {
     let _p = profile::start("resolving");
     let minimal_versions = match config {
@@ -234,7 +234,7 @@ fn activate_deps_loop(
     let mut past_conflicting_activations = conflict_cache::ConflictCache::new();
 
     // Activate all the initial summaries to kick off some work.
-    for &(ref summary, ref opts) in summaries {
+    for (summary, opts) in summaries {
         debug!("initial activation: {}", summary.package_id());
         let res = activate(
             &mut cx,
@@ -514,9 +514,7 @@ fn activate_deps_loop(
                             if let Some((other_parent, conflict)) = remaining_deps
                                 .iter()
                                 // for deps related to us
-                                .filter(|&(_, ref other_dep)| {
-                                    known_related_bad_deps.contains(other_dep)
-                                })
+                                .filter(|(_, other_dep)| known_related_bad_deps.contains(other_dep))
                                 .filter_map(|(other_parent, other_dep)| {
                                     past_conflicting_activations
                                         .find_conflicting(&cx, &other_dep, Some(pid))
@@ -1031,9 +1029,8 @@ fn find_candidate(
             &frame.dep,
             frame.parent.package_id(),
         );
-        let (candidate, has_another) = match next {
-            Some(pair) => pair,
-            None => continue,
+        let Some((candidate, has_another)) = next else {
+            continue;
         };
 
         // If all members of `conflicting_activations` are still

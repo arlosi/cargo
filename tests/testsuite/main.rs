@@ -18,6 +18,7 @@ mod build_script;
 mod build_script_env;
 mod build_script_extra_link_arg;
 mod cache;
+mod cache_lock;
 mod cache_messages;
 mod cargo;
 mod cargo_add;

@@ -18,6 +18,8 @@ mod dev_prefer_existing_version;
 mod dry_run;
 mod empty_dep_table;
 mod features;
+mod features_activated_over_limit;
+mod features_deactivated_over_limit;
 mod features_empty;
 mod features_multiple_occurrences;
 mod features_preserve;

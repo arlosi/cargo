@@ -151,25 +151,19 @@ fn multiple_versions() {
         .with_status(101)
         .with_stderr(
             "\
-error: invalid package ID specification: `two-ver@0`
-
-<tab>Did you mean `two-ver`?
-
-Caused by:
-  cannot parse '0' as a SemVer version
+error: There are multiple `two-ver` packages in your project, and the specification `two-ver@0` is ambiguous.
+Please re-run this command with one of the following specifications:
+  two-ver@0.1.0
+  two-ver@0.2.0
 ",
         )
         .run();
 
     // Incomplete version.
     p.cargo("pkgid two-ver@0.2")
-        .with_status(101)
-        .with_stderr(
+        .with_stdout(
             "\
-error: invalid package ID specification: `two-ver@0.2`
-
-Caused by:
-  cannot parse '0.2' as a SemVer version
+https://github.com/rust-lang/crates.io-index#two-ver@0.2.0
 ",
         )
         .run();
@@ -180,7 +174,7 @@ Caused by:
         .with_stderr(
             "\
 error: There are multiple `two-ver` packages in your project, and the specification `two-ver` is ambiguous.
-Please re-run this command with `-p <spec>` where `<spec>` is one of the following:
+Please re-run this command with one of the following specifications:
   two-ver@0.1.0
   two-ver@0.2.0
 ",

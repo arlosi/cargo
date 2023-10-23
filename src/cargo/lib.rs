@@ -1,16 +1,3 @@
-// For various reasons, some idioms are still allow'ed, but we would like to
-// test and enforce them.
-#![warn(rust_2018_idioms)]
-// Due to some of the default clippy lints being somewhat subjective and not
-// necessarily an improvement, we prefer to not use them at this time.
-#![allow(clippy::all)]
-#![warn(clippy::disallowed_methods)]
-#![warn(clippy::self_named_module_files)]
-#![warn(clippy::print_stdout)]
-#![warn(clippy::print_stderr)]
-#![warn(clippy::dbg_macro)]
-#![allow(rustdoc::private_intra_doc_links)]
-
 //! # Cargo as a library
 //!
 //! There are two places you can find API documentation of cargo-the-library,
@@ -20,7 +7,7 @@
 //! - <https://doc.rust-lang.org/nightly/nightly-rustc/cargo>: targeted at cargo contributors
 //!   - Updated on each update of the `cargo` submodule in `rust-lang/rust`
 //!
-//! **WARNING:** Using Cargo as a library has drawbacks, particulary the API is unstable,
+//! **WARNING:** Using Cargo as a library has drawbacks, particularly the API is unstable,
 //! and there is no clear path to stabilize it soon at the time of writing.  See [The Cargo Book:
 //! External tools] for more on this topic.
 //!
@@ -91,9 +78,7 @@
 //!   This is the `#[cargo_test]` proc-macro used by the test suite to define tests.
 //! - [`credential`](https://github.com/rust-lang/cargo/tree/master/credential)
 //!   This subdirectory contains several packages for implementing the
-//!   experimental
-//!   [credential-process](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#credential-process)
-//!   feature.
+//!   [credential providers](https://doc.rust-lang.org/nightly/cargo/reference/registry-authentication.html).
 //! - [`mdman`](https://github.com/rust-lang/cargo/tree/master/crates/mdman)
 //!   ([nightly docs](https://doc.rust-lang.org/nightly/nightly-rustc/mdman/index.html)):
 //!   This is a utility for generating cargo's man pages. See [Building the man
@@ -143,6 +128,20 @@
 //! [`A-documenting-cargo-itself`]: https://github.com/rust-lang/cargo/labels/A-documenting-cargo-itself
 //! [The Cargo Book]: https://doc.rust-lang.org/cargo/
 //! [Cargo Contributor Guide]: https://doc.crates.io/contrib/
+
+// TODO: consider removing these lint attributes when `-Zlints` hits stable.
+// For various reasons, some idioms are still allow'ed, but we would like to
+// test and enforce them.
+#![warn(rust_2018_idioms)]
+// Due to some of the default clippy lints being somewhat subjective and not
+// necessarily an improvement, we prefer to not use them at this time.
+#![allow(clippy::all)]
+#![warn(clippy::disallowed_methods)]
+#![warn(clippy::self_named_module_files)]
+#![warn(clippy::print_stdout)]
+#![warn(clippy::print_stderr)]
+#![warn(clippy::dbg_macro)]
+#![allow(rustdoc::private_intra_doc_links)]
 
 use crate::core::shell::Verbosity::Verbose;
 use crate::core::Shell;

@@ -30,6 +30,7 @@ use crate::sources::source::QueryKind;
 use crate::sources::SourceConfigMap;
 use crate::sources::CRATES_IO_REGISTRY;
 use crate::util::auth;
+use crate::util::cache_lock::CacheLockMode;
 use crate::util::config::JobsConfig;
 use crate::util::Progress;
 use crate::util::ProgressStyle;
@@ -37,11 +38,12 @@ use crate::CargoResult;
 use crate::Config;
 
 use super::super::check_dep_has_version;
+use super::RegistryOrIndex;
 
 pub struct PublishOpts<'cfg> {
     pub config: &'cfg Config,
     pub token: Option<Secret<String>>,
-    pub index: Option<String>,
+    pub reg_or_index: Option<RegistryOrIndex>,
     pub verify: bool,
     pub allow_dirty: bool,
     pub jobs: Option<JobsConfig>,
@@ -49,7 +51,6 @@ pub struct PublishOpts<'cfg> {
     pub to_publish: ops::Packages,
     pub targets: Vec<String>,
     pub dry_run: bool,
-    pub registry: Option<String>,
     pub cli_features: CliFeatures,
 }
 
@@ -76,7 +77,10 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
 
     let (pkg, cli_features) = pkgs.pop().unwrap();
 
-    let mut publish_registry = opts.registry.clone();
+    let mut publish_registry = match opts.reg_or_index.as_ref() {
+        Some(RegistryOrIndex::Registry(registry)) => Some(registry.clone()),
+        _ => None,
+    };
     if let Some(ref allowed_registries) = *pkg.publish() {
         if publish_registry.is_none() && allowed_registries.len() == 1 {
             // If there is only one allowed registry, push to that one directly,
@@ -116,11 +120,16 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
     let ver = pkg.version().to_string();
     let operation = Operation::Read;
 
+    let reg_or_index = match opts.reg_or_index.clone() {
+        Some(RegistryOrIndex::Registry(_)) | None => {
+            publish_registry.map(RegistryOrIndex::Registry)
+        }
+        val => val,
+    };
     let (mut registry, reg_ids) = super::registry(
         opts.config,
         opts.token.as_ref().map(Secret::as_deref),
-        opts.index.as_deref(),
-        publish_registry.as_deref(),
+        reg_or_index.as_ref(),
         true,
         Some(operation).filter(|_| !opts.dry_run),
     )?;
@@ -161,6 +170,7 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
             None,
             operation,
             vec![],
+            false,
         )?));
     }
 
@@ -224,7 +234,7 @@ fn wait_for_publish(
     progress.tick_now(0, max, "")?;
     let is_available = loop {
         {
-            let _lock = config.acquire_package_cache_lock()?;
+            let _lock = config.acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
             // Force re-fetching the source
             //
             // As pulling from a git source is expensive, we track when we've done it within the

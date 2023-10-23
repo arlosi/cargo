@@ -184,7 +184,7 @@ pub fn print<'a>(
             process.args(args);
         }
         if let CompileKind::Target(t) = kind {
-            process.arg("--target").arg(t.short_name());
+            process.arg("--target").arg(t.rustc_target());
         }
         process.arg("--print").arg(print_opt_value);
         process.exec()?;
@@ -318,8 +318,8 @@ pub fn create_bcx<'a, 'cfg>(
     }
 
     let (extra_args, extra_args_name) = match (target_rustc_args, target_rustdoc_args) {
-        (&Some(ref args), _) => (Some(args.clone()), "rustc"),
-        (_, &Some(ref args)) => (Some(args.clone()), "rustdoc"),
+        (Some(args), _) => (Some(args.clone()), "rustc"),
+        (_, Some(args)) => (Some(args.clone()), "rustdoc"),
         _ => (None, ""),
     };
 
@@ -489,9 +489,8 @@ pub fn create_bcx<'a, 'cfg>(
         );
 
         for unit in unit_graph.keys() {
-            let version = match unit.pkg.rust_version() {
-                Some(v) => v,
-                None => continue,
+            let Some(version) = unit.pkg.rust_version() else {
+                continue;
             };
 
             let req = version.caret_req();

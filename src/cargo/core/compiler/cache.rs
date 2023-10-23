@@ -1,18 +1,16 @@
 //! Implements a cache for compilation artifacts.
 
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io;
+use std::fs::{self};
+use std::hash::Hash;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Context;
 use itertools::Itertools;
-use serde::{Deserialize, Serialize};
 
 use crate::core::{PackageId, TargetKind};
 use crate::util::config::SharedUserCacheConfig;
 use crate::CargoResult;
+use crate::util::short_hash;
 
 use super::context::OutputFile;
 use super::fingerprint::Fingerprint;
@@ -65,9 +63,8 @@ struct LocalCache {
 }
 
 // TODO Figure out the correct key to use here.
-
 /// Key to find a unique artifact in the cache.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Hash)]
 struct Key<'a> {
     /// Version, in case the meaning of any field changes.
     cache_version: u64,
@@ -103,13 +100,6 @@ impl<'a> Key<'a> {
             target_kind,
         }
     }
-}
-
-/// Structure that serialized per-cache key with pointers
-/// to other cache entries for individual files.
-#[derive(Serialize, Deserialize)]
-struct CacheMetadata {
-    files: HashMap<String, cacache::Integrity>,
 }
 
 impl LocalCache {
@@ -169,6 +159,24 @@ impl LocalCache {
 
         true
     }
+
+    fn tmp(&self) -> CargoResult<PathBuf> {
+        let path = self.cache_directory.join("tmp");
+        std::fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
+    fn path(&self, key: &Key<'_>) -> PathBuf {
+        let sid = key.package_id.source_id();
+        let sid_hash = short_hash(&sid);
+        let full_hash = short_hash(&key);
+        let mut path = self.cache_directory.clone();
+        path.push(format!("{}-{}", sid.url().host_str().unwrap_or_default(), sid_hash));
+        path.push(key.package_id.name());
+        path.push(key.package_id.version().to_string());
+        path.push(full_hash);
+        path
+    }
 }
 
 impl Cache for LocalCache {
@@ -185,41 +193,35 @@ impl Cache for LocalCache {
         }
 
         let mut all_found = true;
-        let key =
-            serde_json::to_string(&Key::new(package_id.clone(), fingerprint, target_kind)).unwrap();
-        let Some(metadata) = cacache::metadata_sync(&self.cache_directory, &key)? else {
+        let key = self.path(&Key::new(package_id.clone(), fingerprint, target_kind));
+        if !key.exists() {
             return Ok(false);
         };
-        let metadata: CacheMetadata = serde_json::from_value(metadata.metadata)?;
         for output in outputs {
-            if let Some(sri) = metadata
-                .files
-                .get(output.path.file_name().unwrap().to_str().unwrap())
-            {
-                // TODO Try to hardlink, fallback to copy (reflink is only supported for ReFS).
-                fs::create_dir_all(output.path.parent().unwrap())?;
-                match cacache::copy_hash_sync(&self.cache_directory, sri, &output.path) {
-                    Ok(_) => {
-                        tracing::debug!(
-                            "GET: Found {flavor:?} for '{package_id}' (as {target_kind:?}) in cache, copying to {path:?}",
-                            flavor=output.flavor,
-                            path=output.path,
-                        );
-                    }
-                    Err(cacache::Error::EntryNotFound(..)) => {
-                        tracing::debug!(
-                            "GET: Did not find {flavor:?} for '{package_id}' (as {target_kind:?}) in cache",
-                            flavor=output.flavor
-                        );
-                        all_found = false;
-                    }
-                    Err(err) => {
-                        tracing::debug!(
-                            "GET: Error retrieving {flavor:?} for '{package_id}' (as {target_kind:?}): {err:?}",
-                            flavor=output.flavor
-                        );
-                        return Err(err.into());
-                    }
+            let cache_path = key.join(output.path.file_name().unwrap());
+            fs::create_dir_all(output.path.parent().unwrap())?;
+
+            match fs::copy(&cache_path, &output.path) {
+                Ok(_) => {
+                    tracing::debug!(
+                        "GET: Found {flavor:?} for '{package_id}' (as {target_kind:?}) in cache, copying to {path:?}",
+                        flavor=output.flavor,
+                        path=output.path,
+                    );
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!(
+                        "GET: Did not find {flavor:?} for '{package_id}' (as {target_kind:?}) in cache",
+                        flavor=output.flavor
+                    );
+                    all_found = false;
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        "GET: Error retrieving {flavor:?} for '{package_id}' (as {target_kind:?}): {err:?}",
+                        flavor=output.flavor
+                    );
+                    return Err(err.into());
                 }
             }
         }
@@ -238,59 +240,34 @@ impl Cache for LocalCache {
             return Ok(());
         }
 
-        let key =
-            serde_json::to_string(&Key::new(package_id.clone(), fingerprint, target_kind)).unwrap();
-        let previous_metadata = cacache::metadata_sync(&self.cache_directory, &key);
-        match previous_metadata {
-            Ok(Some(metadata))
-                if cacache::exists_sync(&self.cache_directory, &metadata.integrity) =>
-            {
-                for output in outputs {
-                    // Entry exists and has data, nothing to do.
-                    tracing::debug!(
-                        "PUT: Found {flavor:?} for '{package_id}' (as {target_kind:?}) in cache, skipping update",
-                        flavor=output.flavor
-                    );
-                }
-                return Ok(());
+        let key = self.path(&Key::new(package_id.clone(), fingerprint, target_kind));
+        tracing::debug!(key=key.to_str());
+        if key.exists() {
+            for output in outputs {
+                // Entry exists and has data, nothing to do.
+                tracing::debug!(
+                    "PUT: Found {flavor:?} for '{package_id}' (as {target_kind:?}) in cache, skipping update",
+                    flavor=output.flavor
+                );
             }
-            _ => {}
+            return Ok(());
         }
 
-        let mut metadata = CacheMetadata {
-            files: HashMap::new(),
-        };
-
+        let tmp = self.tmp()?;
         for output in outputs {
             tracing::debug!(
                 "PUT: Adding {flavor:?} for '{package_id}' (as {target_kind:?}) to cache",
                 flavor = output.flavor
             );
-            let mut writer = cacache::WriteOpts::new().open_hash_sync(&self.cache_directory)?;
-            io::copy(
-                &mut File::open(&output.path).context("open build output")?,
-                &mut writer,
-            )
-            .context("copy build output to cache")?;
-
-            let integrity = writer.commit().context("Commit data to cache")?;
-            metadata.files.insert(
-                output
-                    .path
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
-                integrity,
-            );
+            fs::copy(&output.path, tmp.join(output.path.file_name().unwrap()))?;
         }
-
-        // We don't get an error if racing to add to the cache. Both entries are added, but the key will point to the newest one.
-        cacache::WriteOpts::new()
-            .metadata(serde_json::to_value(&metadata).unwrap())
-            .open_sync(&self.cache_directory, &key)?
-            .commit()?;
-        Ok(())
+        match fs::rename(&tmp, &key) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                tracing::warn!("failed renaming cache entry: {err}");
+                let _ = fs::remove_dir_all(&tmp);
+                Ok(())
+            },
+        }
     }
 }

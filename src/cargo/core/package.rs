@@ -24,14 +24,14 @@ use crate::core::resolver::{HasDevUnits, Resolve};
 use crate::core::{Dependency, Manifest, PackageId, SourceId, Target};
 use crate::core::{Summary, Workspace};
 use crate::sources::source::{MaybePackage, SourceMap};
-use crate::util::config::PackageCacheLock;
+use crate::util::cache_lock::{CacheLock, CacheLockMode};
 use crate::util::errors::{CargoResult, HttpNotSuccessful};
 use crate::util::interning::InternedString;
 use crate::util::network::http::http_handle_and_timeout;
 use crate::util::network::http::HttpTimeout;
 use crate::util::network::retry::{Retry, RetryResult};
 use crate::util::network::sleep::SleepTracker;
-use crate::util::PartialVersion;
+use crate::util::RustVersion;
 use crate::util::{self, internal, Config, Progress, ProgressStyle};
 
 pub const MANIFEST_PREAMBLE: &str = "\
@@ -104,7 +104,7 @@ pub struct SerializedPackage {
     #[serde(skip_serializing_if = "Option::is_none")]
     metabuild: Option<Vec<String>>,
     default_run: Option<String>,
-    rust_version: Option<PartialVersion>,
+    rust_version: Option<RustVersion>,
 }
 
 impl Package {
@@ -178,7 +178,7 @@ impl Package {
         self.targets().iter().any(|target| target.proc_macro())
     }
     /// Gets the package's minimum Rust version.
-    pub fn rust_version(&self) -> Option<PartialVersion> {
+    pub fn rust_version(&self) -> Option<&RustVersion> {
         self.manifest().rust_version()
     }
 
@@ -263,7 +263,7 @@ impl Package {
             metabuild: self.manifest().metabuild().cloned(),
             publish: self.publish().as_ref().cloned(),
             default_run: self.manifest().default_run().map(|s| s.to_owned()),
-            rust_version: self.rust_version(),
+            rust_version: self.rust_version().cloned(),
         }
     }
 }
@@ -367,7 +367,7 @@ pub struct Downloads<'a, 'cfg> {
     next_speed_check_bytes_threshold: Cell<u64>,
     /// Global filesystem lock to ensure only one Cargo is downloading at a
     /// time.
-    _lock: PackageCacheLock<'cfg>,
+    _lock: CacheLock<'cfg>,
 }
 
 struct Download<'cfg> {
@@ -465,7 +465,9 @@ impl<'cfg> PackageSet<'cfg> {
             timeout,
             next_speed_check: Cell::new(Instant::now()),
             next_speed_check_bytes_threshold: Cell::new(0),
-            _lock: self.config.acquire_package_cache_lock()?,
+            _lock: self
+                .config
+                .acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?,
         })
     }
 
@@ -478,6 +480,9 @@ impl<'cfg> PackageSet<'cfg> {
 
     pub fn get_many(&self, ids: impl IntoIterator<Item = PackageId>) -> CargoResult<Vec<&Package>> {
         let mut pkgs = Vec::new();
+        let _lock = self
+            .config
+            .acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
         let mut downloads = self.enable_download()?;
         for id in ids {
             pkgs.extend(downloads.start(id)?);

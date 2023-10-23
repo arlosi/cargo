@@ -22,6 +22,7 @@ use cargo::core::Registry;
 use cargo::core::SourceId;
 use cargo::core::Workspace;
 use cargo::sources::source::QueryKind;
+use cargo::util::cache_lock::CacheLockMode;
 use cargo::util::command_prelude::*;
 use cargo::util::ToSemver;
 use cargo::CargoResult;
@@ -105,7 +106,7 @@ fn config_configure(config: &mut Config, args: &ArgMatches) -> CliResult {
 /// Main entry of `xtask-bump-check`.
 ///
 /// Assumption: version number are incremental. We never have point release for old versions.
-fn bump_check(args: &clap::ArgMatches, config: &mut cargo::util::Config) -> CargoResult<()> {
+fn bump_check(args: &clap::ArgMatches, config: &cargo::util::Config) -> CargoResult<()> {
     let ws = args.workspace(config)?;
     let repo = git2::Repository::open(ws.root())?;
     let base_commit = get_base_commit(config, args, &repo)?;
@@ -148,26 +149,13 @@ fn bump_check(args: &clap::ArgMatches, config: &mut cargo::util::Config) -> Carg
         anyhow::bail!(msg)
     }
 
-    // Tracked by https://github.com/obi1kenobi/cargo-semver-checks/issues/511
-    let exclude_args = [
-        "--exclude",
-        "cargo-credential-1password",
-        "--exclude",
-        "cargo-credential-libsecret",
-        "--exclude",
-        "cargo-credential-macos-keychain",
-        "--exclude",
-        "cargo-credential-wincred",
-    ];
-
     // Even when we test against baseline-rev, we still need to make sure a
-    // change doesn't violate SemVer rules aginst crates.io releases. The
+    // change doesn't violate SemVer rules against crates.io releases. The
     // possibility of this happening is nearly zero but no harm to check twice.
     let mut cmd = ProcessBuilder::new("cargo");
     cmd.arg("semver-checks")
         .arg("check-release")
-        .arg("--workspace")
-        .args(&exclude_args);
+        .arg("--workspace");
     config.shell().status("Running", &cmd)?;
     cmd.exec()?;
 
@@ -176,15 +164,14 @@ fn bump_check(args: &clap::ArgMatches, config: &mut cargo::util::Config) -> Carg
         cmd.arg("semver-checks")
             .arg("--workspace")
             .arg("--baseline-rev")
-            .arg(referenced_commit.id().to_string())
-            .args(&exclude_args);
+            .arg(referenced_commit.id().to_string());
         config.shell().status("Running", &cmd)?;
         cmd.exec()?;
     }
 
     status("no version bump needed for member crates.")?;
 
-    return Ok(());
+    Ok(())
 }
 
 /// Returns the commit of upstream `master` branch if `base-rev` is missing.
@@ -256,7 +243,7 @@ fn get_referenced_commit<'a>(
     repo: &'a git2::Repository,
     base: &git2::Commit<'a>,
 ) -> CargoResult<Option<git2::Commit<'a>>> {
-    let [beta, stable] = beta_and_stable_branch(&repo)?;
+    let [beta, stable] = beta_and_stable_branch(repo)?;
     let rev_id = base.id();
     let stable_commit = stable.get().peel_to_commit()?;
     let beta_commit = beta.get().peel_to_commit()?;
@@ -361,7 +348,7 @@ fn check_crates_io<'a>(
 ) -> CargoResult<()> {
     let source_id = SourceId::crates_io(config)?;
     let mut registry = PackageRegistry::new(config)?;
-    let _lock = config.acquire_package_cache_lock()?;
+    let _lock = config.acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
     registry.lock_patches();
     config.shell().status(
         STATUS,
@@ -397,7 +384,7 @@ fn check_crates_io<'a>(
     Ok(())
 }
 
-/// Checkouts a temporary workspace to do further version comparsions.
+/// Checkouts a temporary workspace to do further version comparisons.
 fn checkout_ws<'cfg, 'a>(
     ws: &Workspace<'cfg>,
     repo: &'a git2::Repository,

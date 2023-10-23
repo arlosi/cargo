@@ -68,8 +68,9 @@ use crate::core::Feature;
 use crate::core::{GitReference, PackageId, PackageIdSpec, PackageSet, SourceId, Workspace};
 use crate::ops;
 use crate::sources::PathSource;
+use crate::util::cache_lock::CacheLockMode;
 use crate::util::errors::CargoResult;
-use crate::util::PartialVersion;
+use crate::util::RustVersion;
 use crate::util::{profile, CanonicalUrl};
 use anyhow::Context as _;
 use std::collections::{HashMap, HashSet};
@@ -133,7 +134,7 @@ pub fn resolve_ws_with_opts<'cfg>(
     specs: &[PackageIdSpec],
     has_dev_units: HasDevUnits,
     force_all_targets: ForceAllTargets,
-    max_rust_version: Option<PartialVersion>,
+    max_rust_version: Option<&RustVersion>,
 ) -> CargoResult<WorkspaceResolve<'cfg>> {
     let mut registry = PackageRegistry::new(ws.config())?;
     let mut add_patches = true;
@@ -153,7 +154,7 @@ pub fn resolve_ws_with_opts<'cfg>(
 
         add_overrides(&mut registry, ws)?;
 
-        for &(ref replace_spec, ref dep) in ws.root_replace() {
+        for (replace_spec, dep) in ws.root_replace() {
             if !resolve
                 .iter()
                 .any(|r| replace_spec.matches(r) && !dep.matches_id(r))
@@ -240,7 +241,7 @@ pub fn resolve_ws_with_opts<'cfg>(
 fn resolve_with_registry<'cfg>(
     ws: &Workspace<'cfg>,
     registry: &mut PackageRegistry<'cfg>,
-    max_rust_version: Option<PartialVersion>,
+    max_rust_version: Option<&RustVersion>,
 ) -> CargoResult<Resolve> {
     let prev = ops::load_pkg_lockfile(ws)?;
     let mut resolve = resolve_with_previous(
@@ -285,11 +286,13 @@ pub fn resolve_with_previous<'cfg>(
     to_avoid: Option<&HashSet<PackageId>>,
     specs: &[PackageIdSpec],
     register_patches: bool,
-    max_rust_version: Option<PartialVersion>,
+    max_rust_version: Option<&RustVersion>,
 ) -> CargoResult<Resolve> {
     // We only want one Cargo at a time resolving a crate graph since this can
     // involve a lot of frobbing of the global caches.
-    let _lock = ws.config().acquire_package_cache_lock()?;
+    let _lock = ws
+        .config()
+        .acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
 
     // Here we place an artificial limitation that all non-registry sources
     // cannot be locked at more than one revision. This means that if a Git
@@ -329,15 +332,12 @@ pub fn resolve_with_previous<'cfg>(
             for patch in patches {
                 version_prefs.prefer_dependency(patch.clone());
             }
-            let previous = match previous {
-                Some(r) => r,
-                None => {
-                    let patches: Vec<_> = patches.iter().map(|p| (p, None)).collect();
-                    let unlock_ids = registry.patch(url, &patches)?;
-                    // Since nothing is locked, this shouldn't possibly return anything.
-                    assert!(unlock_ids.is_empty());
-                    continue;
-                }
+            let Some(previous) = previous else {
+                let patches: Vec<_> = patches.iter().map(|p| (p, None)).collect();
+                let unlock_ids = registry.patch(url, &patches)?;
+                // Since nothing is locked, this shouldn't possibly return anything.
+                assert!(unlock_ids.is_empty());
+                continue;
             };
 
             // This is a list of pairs where the first element of the pair is
@@ -489,7 +489,7 @@ pub fn resolve_with_previous<'cfg>(
     let replace = match previous {
         Some(r) => root_replace
             .iter()
-            .map(|&(ref spec, ref dep)| {
+            .map(|(spec, dep)| {
                 for (&key, &val) in r.replacements().iter() {
                     if spec.matches(key) && dep.matches_id(val) && keep(&val) {
                         let mut dep = dep.clone();
@@ -539,9 +539,8 @@ pub fn add_overrides<'a>(
     ws: &Workspace<'a>,
 ) -> CargoResult<()> {
     let config = ws.config();
-    let paths = match config.get_list("paths")? {
-        Some(list) => list,
-        None => return Ok(()),
+    let Some(paths) = config.get_list("paths")? else {
+        return Ok(());
     };
 
     let paths = paths.val.iter().map(|(s, def)| {

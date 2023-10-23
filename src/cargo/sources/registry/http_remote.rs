@@ -4,6 +4,7 @@ use crate::core::{PackageId, SourceId};
 use crate::sources::registry::download;
 use crate::sources::registry::MaybeLock;
 use crate::sources::registry::{LoadResponse, RegistryConfig, RegistryData};
+use crate::util::cache_lock::CacheLockMode;
 use crate::util::errors::{CargoResult, HttpNotSuccessful};
 use crate::util::network::http::http_handle;
 use crate::util::network::retry::{Retry, RetryResult};
@@ -461,7 +462,8 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
     }
 
     fn assert_index_locked<'a>(&self, path: &'a Filesystem) -> &'a Path {
-        self.config.assert_package_cache_locked(path)
+        self.config
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, path)
     }
 
     fn is_updated(&self) -> bool {
@@ -547,9 +549,7 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
                     return Poll::Ready(Ok(LoadResponse::NotFound));
                 }
                 StatusCode::Unauthorized
-                    if !self.auth_required
-                        && path == Path::new(RegistryConfig::NAME)
-                        && self.config.cli_unstable().registry_auth =>
+                    if !self.auth_required && path == Path::new(RegistryConfig::NAME) =>
                 {
                     debug!(target: "network", "re-attempting request for config.json with authorization included.");
                     self.fresh.remove(path);
@@ -612,10 +612,6 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
             }
         }
 
-        if !self.config.cli_unstable().registry_auth {
-            self.auth_required = false;
-        }
-
         // Looks like we're going to have to do a network request.
         self.start_fetch()?;
 
@@ -654,6 +650,7 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
                 self.login_url.as_ref(),
                 Operation::Read,
                 self.auth_error_headers.clone(),
+                true,
             )?;
             headers.append(&format!("Authorization: {}", authorization))?;
             trace!(target: "network", "including authorization for {}", full_url);
@@ -724,10 +721,7 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
     }
 
     fn config(&mut self) -> Poll<CargoResult<Option<RegistryConfig>>> {
-        let mut cfg = ready!(self.config()?).clone();
-        if !self.config.cli_unstable().registry_auth {
-            cfg.auth_required = false;
-        }
+        let cfg = ready!(self.config()?).clone();
         Poll::Ready(Ok(Some(cfg)))
     }
 
@@ -752,6 +746,7 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
                 Poll::Ready(cfg) => break cfg.to_owned(),
             }
         };
+
         download::download(
             &self.cache_path,
             &self.config,

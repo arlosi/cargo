@@ -1,6 +1,7 @@
 use crate::core::compiler::{BuildConfig, MessageFormat, TimingOutput};
 use crate::core::resolver::CliFeatures;
 use crate::core::{Edition, Workspace};
+use crate::ops::registry::RegistryOrIndex;
 use crate::ops::{CompileFilter, CompileOptions, NewOptions, Packages, VersionControl};
 use crate::util::important_paths::find_root_manifest_for_wd;
 use crate::util::interning::InternedString;
@@ -27,6 +28,7 @@ pub use clap::{value_parser, Arg, ArgAction, ArgMatches};
 pub use clap::Command;
 
 use super::config::JobsConfig;
+use super::IntoUrl;
 
 pub mod heading {
     pub const PACKAGE_SELECTION: &str = "Package Selection";
@@ -62,9 +64,19 @@ pub trait CommandExt: Sized {
         all: &'static str,
         exclude: &'static str,
     ) -> Self {
+        let unsupported_short_arg = {
+            let value_parser = UnknownArgumentValueParser::suggest_arg("--exclude");
+            Arg::new("unsupported-short-exclude-flag")
+                .help("")
+                .short('x')
+                .value_parser(value_parser)
+                .action(ArgAction::SetTrue)
+                .hide(true)
+        };
         self.arg_package_spec_simple(package)
             ._arg(flag("workspace", all).help_heading(heading::PACKAGE_SELECTION))
             ._arg(multi_opt("exclude", "SPEC", exclude).help_heading(heading::PACKAGE_SELECTION))
+            ._arg(unsupported_short_arg)
     }
 
     fn arg_package_spec_simple(self, package: &'static str) -> Self {
@@ -108,6 +120,17 @@ pub trait CommandExt: Sized {
         let msg = "use `--no-fail-fast` to run as many tests as possible regardless of failure";
         let value_parser = UnknownArgumentValueParser::suggest(msg);
         self._arg(flag("keep-going", "").value_parser(value_parser).hide(true))
+    }
+
+    fn arg_redundant_default_mode(
+        self,
+        default_mode: &'static str,
+        command: &'static str,
+        supported_mode: &'static str,
+    ) -> Self {
+        let msg = format!("`--{default_mode}` is the default for `cargo {command}`; instead `--{supported_mode}` is supported");
+        let value_parser = UnknownArgumentValueParser::suggest(msg);
+        self._arg(flag(default_mode, "").value_parser(value_parser).hide(true))
     }
 
     fn arg_targets_all(
@@ -219,10 +242,20 @@ pub trait CommandExt: Sized {
     }
 
     fn arg_target_triple(self, target: &'static str) -> Self {
+        let unsupported_short_arg = {
+            let value_parser = UnknownArgumentValueParser::suggest_arg("--target");
+            Arg::new("unsupported-short-target-flag")
+                .help("")
+                .short('t')
+                .value_parser(value_parser)
+                .action(ArgAction::SetTrue)
+                .hide(true)
+        };
         self._arg(
             optional_multi_opt("target", "TRIPLE", target)
                 .help_heading(heading::COMPILATION_OPTIONS),
         )
+        ._arg(unsupported_short_arg)
     }
 
     fn arg_target_dir(self) -> Self {
@@ -234,6 +267,20 @@ pub trait CommandExt: Sized {
     }
 
     fn arg_manifest_path(self) -> Self {
+        // We use `--manifest-path` instead of `--path`.
+        let unsupported_path_arg = {
+            let value_parser = UnknownArgumentValueParser::suggest_arg("--manifest-path");
+            flag("unsupported-path-flag", "")
+                .long("path")
+                .value_parser(value_parser)
+                .hide(true)
+        };
+        self.arg_manifest_path_without_unsupported_path_tip()
+            ._arg(unsupported_path_arg)
+    }
+
+    // `cargo add` has a `--path` flag to install a crate from a local path.
+    fn arg_manifest_path_without_unsupported_path_tip(self) -> Self {
         self._arg(
             opt("manifest-path", "Path to Cargo.toml")
                 .value_name("PATH")
@@ -286,12 +333,21 @@ pub trait CommandExt: Sized {
         )
     }
 
-    fn arg_index(self) -> Self {
-        self._arg(opt("index", "Registry index URL to upload the package to").value_name("INDEX"))
+    fn arg_registry(self, help: &'static str) -> Self {
+        self._arg(opt("registry", help).value_name("REGISTRY"))
+    }
+
+    fn arg_index(self, help: &'static str) -> Self {
+        // Always conflicts with `--registry`.
+        self._arg(
+            opt("index", help)
+                .value_name("INDEX")
+                .conflicts_with("registry"),
+        )
     }
 
     fn arg_dry_run(self, dry_run: &'static str) -> Self {
-        self._arg(flag("dry-run", dry_run))
+        self._arg(flag("dry-run", dry_run).short('n'))
     }
 
     fn arg_ignore_rust_version(self) -> Self {
@@ -309,6 +365,18 @@ pub trait CommandExt: Sized {
     }
 
     fn arg_quiet(self) -> Self {
+        let unsupported_silent_arg = {
+            let value_parser = UnknownArgumentValueParser::suggest_arg("--quiet");
+            flag("silent", "")
+                .short('s')
+                .value_parser(value_parser)
+                .hide(true)
+        };
+        self.arg_quiet_without_unknown_silent_arg_tip()
+            ._arg(unsupported_silent_arg)
+    }
+
+    fn arg_quiet_without_unknown_silent_arg_tip(self) -> Self {
         self._arg(flag("quiet", "Do not print cargo log messages").short('q'))
     }
 
@@ -322,6 +390,27 @@ pub trait CommandExt: Sized {
             .require_equals(true)
             .help_heading(heading::COMPILATION_OPTIONS),
         )
+    }
+
+    fn arg_out_dir(self) -> Self {
+        let unsupported_short_arg = {
+            let value_parser = UnknownArgumentValueParser::suggest_arg("--out-dir");
+            Arg::new("unsupported-short-out-dir-flag")
+                .help("")
+                .short('O')
+                .value_parser(value_parser)
+                .action(ArgAction::SetTrue)
+                .hide(true)
+        };
+        self._arg(
+            opt(
+                "out-dir",
+                "Copy final artifacts to this directory (unstable)",
+            )
+            .value_name("PATH")
+            .help_heading(heading::COMPILATION_OPTIONS),
+        )
+        ._arg(unsupported_short_arg)
     }
 }
 
@@ -475,7 +564,7 @@ Run `{cmd}` to see possible targets."
             (Some(name @ ("dev" | "test" | "bench" | "check")), ProfileChecking::LegacyRustc)
             // `cargo fix` and `cargo check` has legacy handling of this profile name
             | (Some(name @ "test"), ProfileChecking::LegacyTestOnly) => {
-                if self.flag("release") {
+                if self.maybe_flag("release") {
                     config.shell().warn(
                         "the `--release` flag should not be specified with the `--profile` flag\n\
                          The `--release` flag will be ignored.\n\
@@ -499,7 +588,11 @@ Run `{cmd}` to see possible targets."
             )
         };
 
-        let name = match (self.flag("release"), self.flag("debug"), specified_profile) {
+        let name = match (
+            self.maybe_flag("release"),
+            self.maybe_flag("debug"),
+            specified_profile,
+        ) {
             (false, false, None) => default,
             (true, _, None | Some("release")) => "release",
             (true, _, Some(name)) => return Err(conflict("release", "release", name)),
@@ -735,29 +828,32 @@ Run `{cmd}` to see possible targets."
         )
     }
 
-    fn registry(&self, config: &Config) -> CargoResult<Option<String>> {
+    fn registry_or_index(&self, config: &Config) -> CargoResult<Option<RegistryOrIndex>> {
         let registry = self._value_of("registry");
         let index = self._value_of("index");
         let result = match (registry, index) {
-            (None, None) => config.default_registry()?,
-            (None, Some(_)) => {
-                // If --index is set, then do not look at registry.default.
-                None
-            }
+            (None, None) => config.default_registry()?.map(RegistryOrIndex::Registry),
+            (None, Some(i)) => Some(RegistryOrIndex::Index(i.into_url()?)),
             (Some(r), None) => {
                 validate_package_name(r, "registry name", "")?;
-                Some(r.to_string())
+                Some(RegistryOrIndex::Registry(r.to_string()))
             }
             (Some(_), Some(_)) => {
-                bail!("both `--index` and `--registry` should not be set at the same time")
+                // Should be guarded by clap
+                unreachable!("both `--index` and `--registry` should not be set at the same time")
             }
         };
         Ok(result)
     }
 
-    fn index(&self) -> CargoResult<Option<String>> {
-        let index = self._value_of("index").map(|s| s.to_string());
-        Ok(index)
+    fn registry(&self, config: &Config) -> CargoResult<Option<String>> {
+        match self._value_of("registry").map(|s| s.to_string()) {
+            None => config.default_registry(),
+            Some(registry) => {
+                validate_package_name(&registry, "registry name", "")?;
+                Ok(Some(registry))
+            }
+        }
     }
 
     fn check_optional_opts(

@@ -49,6 +49,7 @@
 //! translate from `ConfigValue` and environment variables to the caller's
 //! desired type.
 
+use crate::util::cache_lock::{CacheLock, CacheLockMode, CacheLocker};
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
@@ -58,7 +59,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::prelude::*;
-use std::io::{self, SeekFrom};
+use std::io::SeekFrom;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -70,13 +71,15 @@ use crate::core::compiler::rustdoc::RustdocExternMap;
 use crate::core::shell::Verbosity;
 use crate::core::{features, CliUnstable, Shell, SourceId, Workspace, WorkspaceRootConfig};
 use crate::ops::RegistryCredentialConfig;
+use crate::sources::CRATES_IO_INDEX;
+use crate::sources::CRATES_IO_REGISTRY;
 use crate::util::errors::CargoResult;
 use crate::util::network::http::configure_http_handle;
 use crate::util::network::http::http_handle;
 use crate::util::toml as cargo_toml;
 use crate::util::{internal, CanonicalUrl};
 use crate::util::{try_canonicalize, validate_package_name};
-use crate::util::{FileLock, Filesystem, IntoUrl, IntoUrlWithBase, Rustc};
+use crate::util::{Filesystem, IntoUrl, IntoUrlWithBase, Rustc};
 use anyhow::{anyhow, bail, format_err, Context as _};
 use cargo_credential::Secret;
 use cargo_util::paths;
@@ -224,9 +227,8 @@ pub struct Config {
     credential_cache: LazyCell<RefCell<HashMap<CanonicalUrl, CredentialCacheValue>>>,
     /// Cache of registry config from from the `[registries]` table.
     registry_config: LazyCell<RefCell<HashMap<SourceId, Option<RegistryConfig>>>>,
-    /// Lock, if held, of the global package cache along with the number of
-    /// acquisitions so far.
-    package_cache_lock: RefCell<Option<(Option<FileLock>, usize)>>,
+    /// Locks on the package and index caches.
+    package_cache_lock: CacheLocker,
     /// Cached configuration parsed by Cargo
     http_config: LazyCell<CargoHttpConfig>,
     future_incompat_config: LazyCell<CargoFutureIncompatConfig>,
@@ -317,7 +319,7 @@ impl Config {
             updated_sources: LazyCell::new(),
             credential_cache: LazyCell::new(),
             registry_config: LazyCell::new(),
-            package_cache_lock: RefCell::new(None),
+            package_cache_lock: CacheLocker::new(),
             http_config: LazyCell::new(),
             future_incompat_config: LazyCell::new(),
             net_config: LazyCell::new(),
@@ -635,9 +637,8 @@ impl Config {
             )));
         }
         let mut parts = key.parts().enumerate();
-        let mut val = match vals.get(parts.next().unwrap().1) {
-            Some(val) => val,
-            None => return Ok(None),
+        let Some(mut val) = vals.get(parts.next().unwrap().1) else {
+            return Ok(None);
         };
         for (i, part) in parts {
             match val {
@@ -919,12 +920,9 @@ impl Config {
         key: &ConfigKey,
         output: &mut Vec<(String, Definition)>,
     ) -> CargoResult<()> {
-        let env_val = match self.env.get_str(key.as_env_key()) {
-            Some(v) => v,
-            None => {
-                self.check_environment_key_case_mismatch(key);
-                return Ok(());
-            }
+        let Some(env_val) = self.env.get_str(key.as_env_key()) else {
+            self.check_environment_key_case_mismatch(key);
+            return Ok(());
         };
 
         let def = Definition::Environment(key.as_env_key().to_string());
@@ -1274,9 +1272,8 @@ impl Config {
             };
             (path.to_string(), abs_path, def.clone())
         };
-        let table = match cv {
-            CV::Table(table, _def) => table,
-            _ => unreachable!(),
+        let CV::Table(table, _def) = cv else {
+            unreachable!()
         };
         let owned;
         let include = if remove {
@@ -1315,9 +1312,8 @@ impl Config {
     /// Parses the CLI config args and returns them as a table.
     pub(crate) fn cli_args_as_table(&self) -> CargoResult<ConfigValue> {
         let mut loaded_args = CV::Table(HashMap::new(), Definition::Cli(None));
-        let cli_args = match &self.cli_config {
-            Some(cli_args) => cli_args,
-            None => return Ok(loaded_args),
+        let Some(cli_args) = &self.cli_config else {
+            return Ok(loaded_args);
         };
         let mut seen = HashSet::new();
         for arg in cli_args {
@@ -1463,9 +1459,8 @@ impl Config {
 
     /// Add config arguments passed on the command line.
     fn merge_cli_args(&mut self) -> CargoResult<()> {
-        let loaded_map = match self.cli_args_as_table()? {
-            CV::Table(table, _def) => table,
-            _ => unreachable!(),
+        let CV::Table(loaded_map, _def) = self.cli_args_as_table()? else {
+            unreachable!()
         };
         let values = self.values_mut()?;
         for (key, value) in loaded_map.into_iter() {
@@ -1566,7 +1561,10 @@ impl Config {
                 )
             })
         } else {
-            bail!("no index found for registry: `{}`", registry);
+            bail!(
+                "registry index was not found in any configuration: `{}`",
+                registry
+            );
         }
     }
 
@@ -1609,17 +1607,15 @@ impl Config {
         }
 
         let home_path = self.home_path.clone().into_path_unlocked();
-        let credentials = match self.get_file_path(&home_path, "credentials", true)? {
-            Some(credentials) => credentials,
-            None => return Ok(()),
+        let Some(credentials) = self.get_file_path(&home_path, "credentials", true)? else {
+            return Ok(());
         };
 
         let mut value = self.load_file(&credentials)?;
         // Backwards compatibility for old `.cargo/credentials` layout.
         {
-            let (value_map, def) = match value {
-                CV::Table(ref mut value, ref def) => (value, def),
-                _ => unreachable!(),
+            let CV::Table(ref mut value_map, ref def) = value else {
+                unreachable!();
             };
 
             if let Some(token) = value_map.remove("token") {
@@ -1875,11 +1871,17 @@ impl Config {
         target::load_target_triple(self, target)
     }
 
-    pub fn crates_io_source_id<F>(&self, f: F) -> CargoResult<SourceId>
-    where
-        F: FnMut() -> CargoResult<SourceId>,
-    {
-        Ok(*(self.crates_io_source_id.try_borrow_with(f)?))
+    /// Returns the cached [`SourceId`] corresponding to the main repository.
+    ///
+    /// This is the main cargo registry by default, but it can be overridden in
+    /// a `.cargo/config.toml`.
+    pub fn crates_io_source_id(&self) -> CargoResult<SourceId> {
+        let source_id = self.crates_io_source_id.try_borrow_with(|| {
+            self.check_registry_index_not_set()?;
+            let url = CRATES_IO_INDEX.into_url().unwrap();
+            SourceId::for_alt_registry(&url, CRATES_IO_REGISTRY)
+        })?;
+        Ok(*source_id)
     }
 
     pub fn creation_time(&self) -> Instant {
@@ -1909,10 +1911,20 @@ impl Config {
         T::deserialize(d).map_err(|e| e.into())
     }
 
-    pub fn assert_package_cache_locked<'a>(&self, f: &'a Filesystem) -> &'a Path {
+    /// Obtain a [`Path`] from a [`Filesystem`], verifying that the
+    /// appropriate lock is already currently held.
+    ///
+    /// Locks are usually acquired via [`Config::acquire_package_cache_lock`]
+    /// or [`Config::try_acquire_package_cache_lock`].
+    #[track_caller]
+    pub fn assert_package_cache_locked<'a>(
+        &self,
+        mode: CacheLockMode,
+        f: &'a Filesystem,
+    ) -> &'a Path {
         let ret = f.as_path_unlocked();
         assert!(
-            self.package_cache_lock.borrow().is_some(),
+            self.package_cache_lock.is_locked(mode),
             "package cache lock is not currently held, Cargo forgot to call \
              `acquire_package_cache_lock` before we got to this stack frame",
         );
@@ -1920,72 +1932,26 @@ impl Config {
         ret
     }
 
-    /// Acquires an exclusive lock on the global "package cache"
+    /// Acquires a lock on the global "package cache", blocking if another
+    /// cargo holds the lock.
     ///
-    /// This lock is global per-process and can be acquired recursively. An RAII
-    /// structure is returned to release the lock, and if this process
-    /// abnormally terminates the lock is also released.
-    pub fn acquire_package_cache_lock(&self) -> CargoResult<PackageCacheLock<'_>> {
-        let mut slot = self.package_cache_lock.borrow_mut();
-        match *slot {
-            // We've already acquired the lock in this process, so simply bump
-            // the count and continue.
-            Some((_, ref mut cnt)) => {
-                *cnt += 1;
-            }
-            None => {
-                let path = ".package-cache";
-                let desc = "package cache";
-
-                // First, attempt to open an exclusive lock which is in general
-                // the purpose of this lock!
-                //
-                // If that fails because of a readonly filesystem or a
-                // permission error, though, then we don't really want to fail
-                // just because of this. All files that this lock protects are
-                // in subfolders, so they're assumed by Cargo to also be
-                // readonly or have invalid permissions for us to write to. If
-                // that's the case, then we don't really need to grab a lock in
-                // the first place here.
-                //
-                // Despite this we attempt to grab a readonly lock. This means
-                // that if our read-only folder is shared read-write with
-                // someone else on the system we should synchronize with them,
-                // but if we can't even do that then we did our best and we just
-                // keep on chugging elsewhere.
-                match self.home_path.open_rw(path, self, desc) {
-                    Ok(lock) => *slot = Some((Some(lock), 1)),
-                    Err(e) => {
-                        if maybe_readonly(&e) {
-                            let lock = self.home_path.open_ro(path, self, desc).ok();
-                            *slot = Some((lock, 1));
-                            return Ok(PackageCacheLock(self));
-                        }
-
-                        Err(e).with_context(|| "failed to acquire package cache lock")?;
-                    }
-                }
-            }
-        }
-        return Ok(PackageCacheLock(self));
-
-        fn maybe_readonly(err: &anyhow::Error) -> bool {
-            err.chain().any(|err| {
-                if let Some(io) = err.downcast_ref::<io::Error>() {
-                    if io.kind() == io::ErrorKind::PermissionDenied {
-                        return true;
-                    }
-
-                    #[cfg(unix)]
-                    return io.raw_os_error() == Some(libc::EROFS);
-                }
-
-                false
-            })
-        }
+    /// See [`crate::util::cache_lock`] for an in-depth discussion of locking
+    /// and lock modes.
+    pub fn acquire_package_cache_lock(&self, mode: CacheLockMode) -> CargoResult<CacheLock<'_>> {
+        self.package_cache_lock.lock(self, mode)
     }
 
-    pub fn release_package_cache_lock(&self) {}
+    /// Acquires a lock on the global "package cache", returning `None` if
+    /// another cargo holds the lock.
+    ///
+    /// See [`crate::util::cache_lock`] for an in-depth discussion of locking
+    /// and lock modes.
+    pub fn try_acquire_package_cache_lock(
+        &self,
+        mode: CacheLockMode,
+    ) -> CargoResult<Option<CacheLock<'_>>> {
+        self.package_cache_lock.try_lock(self, mode)
+    }
 }
 
 /// Internal error for serde errors.
@@ -2304,7 +2270,7 @@ pub fn save_credentials(
     let mut file = {
         cfg.home_path.create_dir()?;
         cfg.home_path
-            .open_rw(filename, cfg, "credentials' config file")?
+            .open_rw_exclusive_create(filename, cfg, "credentials' config file")?
     };
 
     let mut contents = String::new();
@@ -2420,19 +2386,6 @@ pub fn save_credentials(
     #[allow(unused)]
     fn set_permissions(file: &File, mode: u32) -> CargoResult<()> {
         Ok(())
-    }
-}
-
-pub struct PackageCacheLock<'a>(&'a Config);
-
-impl Drop for PackageCacheLock<'_> {
-    fn drop(&mut self) {
-        let mut slot = self.0.package_cache_lock.borrow_mut();
-        let (_, cnt) = slot.as_mut().unwrap();
-        *cnt -= 1;
-        if *cnt == 0 {
-            *slot = None;
-        }
     }
 }
 

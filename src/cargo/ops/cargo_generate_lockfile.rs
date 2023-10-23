@@ -3,10 +3,13 @@ use crate::core::resolver::features::{CliFeatures, HasDevUnits};
 use crate::core::{PackageId, PackageIdSpec};
 use crate::core::{Resolve, SourceId, Workspace};
 use crate::ops;
+use crate::util::cache_lock::CacheLockMode;
 use crate::util::config::Config;
+use crate::util::style;
 use crate::util::CargoResult;
+use anstyle::Style;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
-use termcolor::Color::{self, Cyan, Green, Red, Yellow};
 use tracing::debug;
 
 pub struct UpdateOptions<'a> {
@@ -47,7 +50,9 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
 
     // Updates often require a lot of modifications to the registry, so ensure
     // that we're synchronized against other Cargos.
-    let _lock = ws.config().acquire_package_cache_lock()?;
+    let _lock = ws
+        .config()
+        .acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
 
     let max_rust_version = ws.rust_version();
 
@@ -133,7 +138,7 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
     )?;
 
     // Summarize what is changing for the user.
-    let print_change = |status: &str, msg: String, color: Color| {
+    let print_change = |status: &str, msg: String, color: &Style| {
         opts.config.shell().status_with_color(status, msg, color)
     };
     for (removed, added) in compare_dependency_graphs(&previous_resolve, &resolve) {
@@ -148,17 +153,21 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
                 format!("{} -> v{}", removed[0], added[0].version())
             };
 
-            if removed[0].version() > added[0].version() {
-                print_change("Downgrading", msg, Yellow)?;
+            // If versions differ only in build metadata, we call it an "update"
+            // regardless of whether the build metadata has gone up or down.
+            // This metadata is often stuff like git commit hashes, which are
+            // not meaningfully ordered.
+            if removed[0].version().cmp_precedence(added[0].version()) == Ordering::Greater {
+                print_change("Downgrading", msg, &style::WARN)?;
             } else {
-                print_change("Updating", msg, Green)?;
+                print_change("Updating", msg, &style::GOOD)?;
             }
         } else {
             for package in removed.iter() {
-                print_change("Removing", format!("{}", package), Red)?;
+                print_change("Removing", format!("{}", package), &style::ERROR)?;
             }
             for package in added.iter() {
-                print_change("Adding", format!("{}", package), Cyan)?;
+                print_change("Adding", format!("{}", package), &style::NOTE)?;
             }
         }
     }
@@ -203,9 +212,8 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
                 .filter(|a| {
                     // If this package ID is not found in `b`, then it's definitely
                     // in the subtracted set.
-                    let i = match b.binary_search(a) {
-                        Ok(i) => i,
-                        Err(..) => return true,
+                    let Ok(i) = b.binary_search(a) else {
+                        return true;
                     };
 
                     // If we've found `a` in `b`, then we iterate over all instances

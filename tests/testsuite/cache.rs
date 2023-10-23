@@ -5,7 +5,7 @@ use cargo_test_support::registry::Package;
 
 /// Test that -Z shared-user-cache, configured properly on nightly, works as expected.
 #[cargo_test]
-fn arg_with_config_on_nightly_ok() {
+fn simple() {
     Package::new("bar", "0.1.0").publish();
     Package::new("baz", "0.2.0").publish();
 
@@ -49,43 +49,8 @@ fn arg_with_config_on_nightly_ok() {
         .run();
 }
 
-/// Test that -Z shared-user-cache with no configuration fails as expected on nightly.
 #[cargo_test]
-fn arg_without_config_on_nightly_err() {
-    Package::new("bar", "0.1.0").publish();
-    Package::new("baz", "0.2.0").publish();
-
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-                authors = []
-
-                [dependencies]
-                bar = { version = "0.1.0" }
-                baz = { version = "0.2.0" }
-            "#,
-        )
-        .file("src/lib.rs", "extern crate bar; extern crate baz;")
-        .build();
-
-    p.cargo("build -Z shared-user-cache")
-        .masquerade_as_nightly_cargo(&["shared-user-cache"])
-        .with_stderr(
-            "\
-[CACHED] bar v0.1.0
-[CACHED] baz v0.2.0
-[COMPILING] foo v0.0.1 [..]
-[FINISHED] [..]",
-        )
-        .run_expect_error();
-}
-
-#[cargo_test]
-fn config_without_arg_on_nightly_err() {
+fn requires_nightly() {
     Package::new("bar", "0.1.0").publish();
     Package::new("baz", "0.2.0").publish();
 
@@ -114,7 +79,6 @@ fn config_without_arg_on_nightly_err() {
         .build();
 
     p.cargo("build")
-        .masquerade_as_nightly_cargo(&["shared-user-cache"])
         .with_stderr(
             "\
 [UPDATING] [..]

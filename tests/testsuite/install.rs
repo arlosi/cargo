@@ -2443,3 +2443,43 @@ fn ambiguous_registry_vs_local_package() {
         .run();
     assert_has_installed_exe(cargo_home(), "foo");
 }
+
+#[cargo_test]
+fn install_with_redundant_default_mode() {
+    pkg("foo", "0.0.1");
+
+    cargo_process("install foo --release")
+        .with_stderr(
+            "\
+error: unexpected argument '--release' found
+
+  tip: `--release` is the default for `cargo install`; instead `--debug` is supported
+
+Usage: cargo[EXE] install [OPTIONS] [crate]...
+
+For more information, try '--help'.
+",
+        )
+        .with_status(1)
+        .run();
+}
+
+#[cargo_test]
+fn install_incompat_msrv() {
+    Package::new("foo", "0.1.0")
+        .file("src/main.rs", "fn main() {}")
+        .rust_version("1.30")
+        .publish();
+    Package::new("foo", "0.2.0")
+        .file("src/main.rs", "fn main() {}")
+        .rust_version("1.9876.0")
+        .publish();
+
+    cargo_process("install foo")
+        .with_stderr("\
+[UPDATING] `dummy-registry` index
+[ERROR] cannot install package `foo 0.2.0`, it requires rustc 1.9876.0 or newer, while the currently active rustc version is [..]
+`foo 0.1.0` supports rustc 1.30
+")
+        .with_status(101).run();
+}

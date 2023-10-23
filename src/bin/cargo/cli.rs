@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context as _};
 use cargo::core::shell::Shell;
 use cargo::core::{features, CliUnstable};
 use cargo::{self, drop_print, drop_println, CargoResult, CliResult, Config};
-use clap::{Arg, ArgMatches};
+use clap::{builder::UnknownArgumentValueParser, Arg, ArgMatches};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -14,6 +14,7 @@ use super::list_commands;
 use crate::command_prelude::*;
 use crate::util::is_rustup;
 use cargo::core::features::HIDDEN;
+use cargo::util::style;
 
 pub fn main(config: &mut LazyConfig) -> CliResult {
     let args = cli().try_get_matches()?;
@@ -313,7 +314,7 @@ For more information, see issue #10049 <https://github.com/rust-lang/cargo/issue
                     } else {
                         config.shell().warn(format_args!(
                             "\
-user-defined alias `{cmd}` has the appearance of a manfiest-command
+user-defined alias `{cmd}` has the appearance of a manifest-command
 This was previously accepted but will be phased out when `-Zscript` is stabilized.
 For more information, see issue #12207 <https://github.com/rust-lang/cargo/issues/12207>."
                         ))?;
@@ -448,7 +449,7 @@ impl Exec {
                 if !config.cli_unstable().script && ext_path.is_some() {
                     config.shell().warn(format_args!(
                         "\
-external subcommand `{cmd}` has the appearance of a manfiest-command
+external subcommand `{cmd}` has the appearance of a manifest-command
 This was previously accepted but will be phased out when `-Zscript` is stabilized.
 For more information, see issue #12207 <https://github.com/rust-lang/cargo/issues/12207>.",
                     ))?;
@@ -519,15 +520,14 @@ pub fn cli() -> Command {
     };
 
     let styles = {
-        use clap::builder::styling::*;
-        Styles::styled()
-            .header(AnsiColor::Green.on_default() | Effects::BOLD)
-            .usage(AnsiColor::Green.on_default() | Effects::BOLD)
-            .literal(AnsiColor::Cyan.on_default() | Effects::BOLD)
-            .placeholder(AnsiColor::Cyan.on_default())
-            .error(AnsiColor::Red.on_default() | Effects::BOLD)
-            .valid(AnsiColor::Cyan.on_default() | Effects::BOLD)
-            .invalid(AnsiColor::Yellow.on_default() | Effects::BOLD)
+        clap::builder::styling::Styles::styled()
+            .header(style::HEADER)
+            .usage(style::USAGE)
+            .literal(style::LITERAL)
+            .placeholder(style::PLACEHOLDER)
+            .error(style::ERROR)
+            .valid(style::VALID)
+            .invalid(style::INVALID)
     };
 
     Command::new("cargo")
@@ -618,15 +618,29 @@ See '<cyan,bold>cargo help</> <cyan><<command>></>' for more information on a sp
                 .help_heading(heading::MANIFEST_OPTIONS)
                 .global(true),
         )
+        // Better suggestion for the unsupported short config flag.
+        .arg( Arg::new("unsupported-short-config-flag")
+            .help("")
+            .short('c')
+            .value_parser(UnknownArgumentValueParser::suggest_arg("--config"))
+            .action(ArgAction::SetTrue)
+            .global(true)
+            .hide(true))
         .arg(multi_opt("config", "KEY=VALUE", "Override a configuration value").global(true))
-        .arg(
-            Arg::new("unstable-features")
-                .help("Unstable (nightly-only) flags to Cargo, see 'cargo -Z help' for details")
-                .short('Z')
-                .value_name("FLAG")
-                .action(ArgAction::Append)
-                .global(true),
-        )
+        // Better suggestion for the unsupported lowercase unstable feature flag.
+        .arg( Arg::new("unsupported-lowercase-unstable-feature-flag")
+            .help("")
+            .short('z')
+            .value_parser(UnknownArgumentValueParser::suggest_arg("-Z"))
+            .action(ArgAction::SetTrue)
+            .global(true)
+            .hide(true))
+        .arg(Arg::new("unstable-features")
+            .help("Unstable (nightly-only) flags to Cargo, see 'cargo -Z help' for details")
+            .short('Z')
+            .value_name("FLAG")
+            .action(ArgAction::Append)
+            .global(true))
         .subcommands(commands::builtin())
 }
 

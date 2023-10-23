@@ -13,6 +13,7 @@ use crate::core::{registry::PackageRegistry, resolver::HasDevUnits};
 use crate::core::{Feature, Shell, Verbosity, Workspace};
 use crate::core::{Package, PackageId, PackageSet, Resolve, SourceId};
 use crate::sources::PathSource;
+use crate::util::cache_lock::CacheLockMode;
 use crate::util::config::JobsConfig;
 use crate::util::errors::CargoResult;
 use crate::util::toml::TomlManifest;
@@ -132,7 +133,7 @@ pub fn package_one(
     let dir = ws.target_dir().join("package");
     let mut dst = {
         let tmp = format!(".{}", filename);
-        dir.open_rw(&tmp, config, "package scratch space")?
+        dir.open_rw_exclusive_create(&tmp, config, "package scratch space")?
     };
 
     // Package up and test a temporary tarball and only move it to the final
@@ -237,7 +238,7 @@ fn build_ar_list(
         let rel_str = rel_path.to_str().ok_or_else(|| {
             anyhow::format_err!("non-utf8 path in source directory: {}", rel_path.display())
         })?;
-        match rel_str.as_ref() {
+        match rel_str {
             "Cargo.lock" => continue,
             VCS_INFO_FILE | ORIGINAL_MANIFEST_FILE => anyhow::bail!(
                 "invalid inclusion of reserved file name {} in package source",
@@ -423,7 +424,7 @@ fn build_lock(ws: &Workspace<'_>, orig_pkg: &Package) -> CargoResult<String> {
         TomlManifest::to_real_manifest(&toml_manifest, false, source_id, package_root, config)?;
     let new_pkg = Package::new(manifest, orig_pkg.manifest_path());
 
-    let max_rust_version = new_pkg.rust_version();
+    let max_rust_version = new_pkg.rust_version().cloned();
 
     // Regenerate Cargo.lock using the old one as a guide.
     let tmp_ws = Workspace::ephemeral(new_pkg, ws.config(), None, true)?;
@@ -437,7 +438,7 @@ fn build_lock(ws: &Workspace<'_>, orig_pkg: &Package) -> CargoResult<String> {
         None,
         &[],
         true,
-        max_rust_version,
+        max_rust_version.as_ref(),
     )?;
     let pkg_set = ops::get_resolved_packages(&new_resolve, tmp_reg)?;
 
@@ -806,7 +807,7 @@ pub fn check_yanked(
 ) -> CargoResult<()> {
     // Checking the yanked status involves taking a look at the registry and
     // maybe updating files, so be sure to lock it here.
-    let _lock = config.acquire_package_cache_lock()?;
+    let _lock = config.acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
 
     let mut sources = pkg_set.sources_mut();
     let mut pending: Vec<PackageId> = resolve.iter().collect();
@@ -994,17 +995,15 @@ fn report_hash_difference(orig: &HashMap<PathBuf, u64>, after: &HashMap<PathBuf,
 // To help out in situations like this, issue about weird filenames when
 // packaging as a "heads up" that something may not work on other platforms.
 fn check_filename(file: &Path, shell: &mut Shell) -> CargoResult<()> {
-    let name = match file.file_name() {
-        Some(name) => name,
-        None => return Ok(()),
+    let Some(name) = file.file_name() else {
+        return Ok(());
     };
-    let name = match name.to_str() {
-        Some(name) => name,
-        None => anyhow::bail!(
+    let Some(name) = name.to_str() else {
+        anyhow::bail!(
             "path does not have a unicode filename which may not unpack \
              on all platforms: {}",
             file.display()
-        ),
+        )
     };
     let bad_chars = ['/', '\\', '<', '>', ':', '"', '|', '?', '*'];
     if let Some(c) = bad_chars.iter().find(|c| name.contains(**c)) {

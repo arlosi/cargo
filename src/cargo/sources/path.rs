@@ -10,7 +10,7 @@ use crate::sources::source::QueryKind;
 use crate::sources::source::Source;
 use crate::sources::IndexSummary;
 use crate::util::{internal, CargoResult, GlobalContext};
-use anyhow::Context as _;
+use anyhow::{Context as _};
 use cargo_util::paths;
 use filetime::FileTime;
 use gix::bstr::{BString, ByteVec};
@@ -136,27 +136,38 @@ impl<'gctx> PathSource<'gctx> {
         })
     }
 
+    fn gitoxide_failure(&self, msg: &str) -> CargoResult<()> {
+        if std::env::var_os("DISABLE_LIST_FILES_GITOXIDE").is_none() {
+            return Err(internal(msg));
+        }
+        Ok(())   
+    }
+
     /// See [`PathSource::list_files`].
     fn _list_files(&self, pkg: &Package) -> CargoResult<Vec<PathBuf>> {
         let root = pkg.root();
         let no_include_option = pkg.manifest().include().is_empty();
-        let git_repo = if no_include_option {
-            if self
-                .gctx
-                .cli_unstable()
-                .gitoxide
-                .map_or(false, |features| features.list_files)
-            {
-                self.discover_gix_repo(root)?.map(Git2OrGixRepository::Gix)
-            } else {
-                self.discover_git_repo(root)?.map(Git2OrGixRepository::Git2)
+        let (gix_repo, git2_repo) = if no_include_option {
+            match (self.discover_gix_repo(root), self.discover_git_repo(root)) {
+                (Ok(None), Ok(None)) => (None, None),
+                (Ok(Some(gix)), Ok(Some(git2))) => (Some(gix), Some(git2)),
+                (Ok(None), Ok(Some(git2))) => {
+                    self.gitoxide_failure("gitoxide did not discover a git repo, while git2 did")?;
+                    (None, Some(git2))
+                },
+                (Err(e), Ok(git2)) => {
+                    self.gitoxide_failure(&format!("gitoxide failed while discovering git repo, while git2 succeeded: {e}"))?;
+                    (None, git2)
+                }
+                (Ok(gix), _) => (gix, None),
+                (Err(e), _) => return Err(e)
             }
         } else {
-            None
+            (None, None)
         };
 
         let mut exclude_builder = GitignoreBuilder::new(root);
-        if no_include_option && git_repo.is_none() {
+        if no_include_option && gix_repo.is_none() && git2_repo.is_none() {
             // no include option and not git repo discovered (see rust-lang/cargo#7183).
             exclude_builder.add_line(None, ".*")?;
         }
@@ -205,16 +216,29 @@ impl<'gctx> PathSource<'gctx> {
             ignore_should_package(relative_path, is_dir)
         };
 
-        // Attempt Git-prepopulate only if no `include` (see rust-lang/cargo#4135).
-        if no_include_option {
-            if let Some(repo) = git_repo {
-                return match repo {
-                    Git2OrGixRepository::Git2(repo) => self.list_files_git(pkg, &repo, &filter),
-                    Git2OrGixRepository::Gix(repo) => self.list_files_gix(pkg, &repo, &filter),
-                };
-            }
+        match (gix_repo, git2_repo) {
+            (None, None) => self.list_files_walk(pkg, &filter),
+            (None, Some(git2_repo)) => self.list_files_git(pkg, &git2_repo, &filter),
+            (Some(gix_repo), None) => self.list_files_gix(pkg, &gix_repo, &filter),
+            (Some(gix_repo), Some(git2_repo)) => {
+                match (self.list_files_gix(pkg, &gix_repo, &filter), self.list_files_git(pkg, &git2_repo, &filter)) {
+                    (Ok(mut gix), Ok(mut git)) => {
+                        gix.sort();
+                        git.sort();
+                        if gix != git {
+                            self.gitoxide_failure(&format!("listed files from gitoxide differ from git2: {gix:#?} != {git:#?}"))?;
+                        }
+                        Ok(gix)
+                    },
+                    (Ok(gix), _) => Ok(gix),
+                    (Err(e), Ok(git)) => {
+                        self.gitoxide_failure(&format!("gitoxide failed to list files, while git2 succeeded: {e}"))?;
+                        Ok(git)
+                    },
+                    (Err(e), Err(_)) => Err(e),
+                }
+            },
         }
-        self.list_files_walk(pkg, &filter)
     }
 
     /// Returns `Some(git2::Repository)` if found sibling `Cargo.toml` and `.git`
@@ -730,11 +754,6 @@ impl<'gctx> PathSource<'gctx> {
 
         Ok(())
     }
-}
-
-enum Git2OrGixRepository {
-    Git2(git2::Repository),
-    Gix(gix::Repository),
 }
 
 impl<'gctx> Debug for PathSource<'gctx> {

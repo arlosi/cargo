@@ -5,6 +5,7 @@
 //!
 //! [1]: https://doc.rust-lang.org/nightly/cargo/reference/registry-web-api.html#login
 
+use std::borrow::Cow;
 use std::io::IsTerminal;
 
 use crate::util::auth;
@@ -48,8 +49,8 @@ pub fn registry_login(
     });
 
     let options = LoginOptions {
-        token,
-        login_url: login_url.as_deref(),
+        token: token.map(|t| t.map(Cow::Borrowed)),
+        login_url: login_url.map(Cow::Owned),
     };
 
     auth::login(gctx, &source_ids.original, options, args)?;

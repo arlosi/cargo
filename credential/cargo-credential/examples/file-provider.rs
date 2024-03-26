@@ -4,7 +4,7 @@
 use cargo_credential::{
     Action, CacheControl, Credential, CredentialResponse, RegistryInfo, Secret,
 };
-use std::{collections::HashMap, fs::File, io::ErrorKind};
+use std::{collections::HashMap, fs::File, io::ErrorKind, ops::Deref};
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 struct FileCredential;
@@ -30,7 +30,7 @@ impl Credential for FileCredential {
         match action {
             Action::Get(_) => {
                 // Cargo requested a token, look it up.
-                if let Some(token) = creds.get(registry.index_url) {
+                if let Some(token) = creds.get(registry.index_url.deref()) {
                     Ok(CredentialResponse::Get {
                         token: token.clone(),
                         cache: CacheControl::Session,
@@ -56,7 +56,7 @@ impl Credential for FileCredential {
                 Ok(CredentialResponse::Login)
             }
             Action::Logout => {
-                if creds.remove(registry.index_url).is_none() {
+                if creds.remove(registry.index_url.deref()).is_none() {
                     // If the user attempts to log out from a registry that has no credentials
                     // stored, then NotFound is the appropriate error.
                     Err(cargo_credential::Error::NotFound)

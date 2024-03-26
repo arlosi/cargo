@@ -24,13 +24,13 @@ impl Credential for BasicProcessCredential {
                 let mut args = args.iter();
                 let exe = args.next()
                     .ok_or("The first argument to `cargo:token-from-stdout` must be a command that prints a token on stdout")?;
-                let args = args.map(|arg| arg.replace("{index_url}", registry.index_url));
+                let args = args.map(|arg| arg.replace("{index_url}", &registry.index_url));
 
                 let mut cmd = Command::new(exe);
                 cmd.args(args)
-                    .env("CARGO_REGISTRY_INDEX_URL", registry.index_url);
-                if let Some(name) = registry.name {
-                    cmd.env("CARGO_REGISTRY_NAME_OPT", name);
+                    .env("CARGO_REGISTRY_INDEX_URL", registry.index_url.to_string());
+                if let Some(name) = &registry.name {
+                    cmd.env("CARGO_REGISTRY_NAME_OPT", name.to_string());
                 }
                 cmd.stdout(Stdio::piped());
                 let mut child = cmd.spawn().context("failed to spawn credential process")?;

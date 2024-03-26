@@ -28,8 +28,8 @@ impl<'a> Credential for TokenCredential<'a> {
         action: &Action<'_>,
         _args: &[&str],
     ) -> Result<CredentialResponse, Error> {
-        let index_url = Url::parse(registry.index_url).context("parsing index url")?;
-        let sid = if let Some(name) = registry.name {
+        let index_url = Url::parse(&registry.index_url).context("parsing index url")?;
+        let sid = if let Some(name) = &registry.name {
             SourceId::for_alt_registry(&index_url, name)
         } else {
             SourceId::for_registry(&index_url)

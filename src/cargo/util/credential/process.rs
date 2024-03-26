@@ -2,6 +2,7 @@
 //! protocol.
 
 use std::{
+    borrow::Cow,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -58,7 +59,7 @@ impl<'a> CredentialProcessCredential {
             v: cargo_credential::PROTOCOL_VERSION_1,
             action: action.clone(),
             registry: registry.clone(),
-            args: args.to_vec(),
+            args: args.iter().map(|a| Cow::Borrowed(*a)).collect(),
         };
         let request = serde_json::to_string(&req).context("failed to serialize request")?;
         tracing::debug!("credential-process < {req:?}");

@@ -270,7 +270,7 @@ impl Credential for OnePasswordCredential {
         match action {
             Action::Get(_) => {
                 let session = op.signin()?;
-                if let Some(id) = op.search(&session, registry.index_url)? {
+                if let Some(id) = op.search(&session, &registry.index_url)? {
                     op.get_token(&session, &id)
                         .map(|token| CredentialResponse::Get {
                             token,
@@ -284,20 +284,20 @@ impl Credential for OnePasswordCredential {
             Action::Login(options) => {
                 let session = op.signin()?;
                 // Check if an item already exists.
-                if let Some(id) = op.search(&session, registry.index_url)? {
+                if let Some(id) = op.search(&session, &registry.index_url)? {
                     eprintln!("note: token already exists for `{}`", registry.index_url);
                     let token = cargo_credential::read_token(options, registry)?;
                     op.modify(&session, &id, token.as_deref(), None)?;
                 } else {
                     let token = cargo_credential::read_token(options, registry)?;
-                    op.create(&session, registry.index_url, token.as_deref(), None)?;
+                    op.create(&session, &registry.index_url, token.as_deref(), None)?;
                 }
                 Ok(CredentialResponse::Login)
             }
             Action::Logout => {
                 let session = op.signin()?;
                 // Check if an item already exists.
-                if let Some(id) = op.search(&session, registry.index_url)? {
+                if let Some(id) = op.search(&session, &registry.index_url)? {
                     op.delete(&session, &id)?;
                     Ok(CredentialResponse::Logout)
                 } else {

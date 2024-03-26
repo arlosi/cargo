@@ -2,6 +2,8 @@
 //!
 //! [1]: https://doc.rust-lang.org/nightly/cargo/reference/registry-web-api.html#owners
 
+use std::borrow::Cow;
+
 use anyhow::Context as _;
 use cargo_credential::Operation;
 use cargo_credential::Secret;
@@ -34,7 +36,9 @@ pub fn modify_owners(gctx: &GlobalContext, opts: &OwnersOptions) -> CargoResult<
         }
     };
 
-    let operation = Operation::Owners { name: &name };
+    let operation = Operation::Owners {
+        name: Cow::Borrowed(&name),
+    };
 
     let (mut registry, _) = super::registry(
         gctx,

@@ -2,6 +2,7 @@
 //!
 //! [1]: https://doc.rust-lang.org/nightly/cargo/reference/registry-web-api.html#publish
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
@@ -164,9 +165,9 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
             .update_file(tarball.file())?
             .finish_hex();
         let operation = Operation::Publish {
-            name: pkg.name().as_str(),
-            vers: &ver,
-            cksum: &hash,
+            name: Cow::Borrowed(pkg.name().as_str()),
+            vers: Cow::Borrowed(&ver),
+            cksum: Cow::Borrowed(&hash),
         };
         registry.set_token(Some(auth::auth_token(
             &opts.gctx,

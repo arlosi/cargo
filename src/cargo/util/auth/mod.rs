@@ -12,7 +12,7 @@ use cargo_credential::{
 
 use core::fmt;
 use serde::Deserialize;
-use std::error::Error;
+use std::{borrow::Cow, error::Error};
 use time::{Duration, OffsetDateTime};
 use url::Url;
 
@@ -507,8 +507,8 @@ fn credential_action(
 ) -> CargoResult<CredentialResponse> {
     let name = sid.alt_registry_key();
     let registry = RegistryInfo {
-        index_url: sid.url().as_str(),
-        name,
+        index_url: Cow::Borrowed(sid.url().as_str()),
+        name: name.map(Cow::Borrowed),
         headers,
     };
     let providers = credential_provider(gctx, sid, require_cred_provider_config, true)?;

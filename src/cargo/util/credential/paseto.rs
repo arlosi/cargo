@@ -63,8 +63,8 @@ impl<'a> Credential for PasetoCredential<'a> {
         action: &Action<'_>,
         args: &[&str],
     ) -> Result<CredentialResponse, Error> {
-        let index_url = Url::parse(registry.index_url).context("parsing index url")?;
-        let sid = if let Some(name) = registry.name {
+        let index_url = Url::parse(&registry.index_url).context("parsing index url")?;
+        let sid = if let Some(name) = &registry.name {
             SourceId::for_alt_registry(&index_url, name)
         } else {
             SourceId::for_registry(&index_url)
@@ -175,7 +175,7 @@ impl<'a> Credential for PasetoCredential<'a> {
                 let new_token;
                 let secret_key: Secret<String>;
                 if let Some(key) = &options.token {
-                    secret_key = key.clone().map(str::to_string);
+                    secret_key = key.as_ref().map(|k| k.to_string());
                 } else {
                     let kp = AsymmetricKeyPair::<pasetors::version3::V3>::generate().unwrap();
                     secret_key = Secret::default().map(|mut key| {

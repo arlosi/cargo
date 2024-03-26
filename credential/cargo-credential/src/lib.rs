@@ -41,7 +41,7 @@
 #![allow(clippy::print_stdout)]
 
 use serde::{Deserialize, Serialize};
-use std::{fmt::Display, io};
+use std::{borrow::Cow, fmt::Display, io};
 use time::OffsetDateTime;
 
 mod error;
@@ -84,18 +84,18 @@ pub struct CredentialRequest<'a> {
     pub action: Action<'a>,
     /// Additional command-line arguments passed to the credential provider.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub args: Vec<&'a str>,
+    pub args: Vec<Cow<'a, str>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub struct RegistryInfo<'a> {
     /// Registry index url
-    pub index_url: &'a str,
+    pub index_url: Cow<'a, str>,
     /// Name of the registry in configuration. May not be available.
     /// The crates.io registry will be `crates-io` (`CRATES_IO_REGISTRY`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<&'a str>,
+    pub name: Option<Cow<'a, str>>,
     /// Headers from attempting to access a registry that resulted in a HTTP 401.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub headers: Vec<String>,
@@ -129,10 +129,10 @@ impl<'a> Display for Action<'a> {
 pub struct LoginOptions<'a> {
     /// Token passed on the command line via --token or from stdin
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<Secret<&'a str>>,
+    pub token: Option<Secret<Cow<'a, str>>>,
     /// Optional URL that the user can visit to log in to the registry
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub login_url: Option<&'a str>,
+    pub login_url: Option<Cow<'a, str>>,
 }
 
 /// A record of what kind of operation is happening that we should generate a token for.
@@ -145,30 +145,30 @@ pub enum Operation<'a> {
     /// The user is attempting to publish a crate.
     Publish {
         /// The name of the crate
-        name: &'a str,
+        name: Cow<'a, str>,
         /// The version of the crate
-        vers: &'a str,
+        vers: Cow<'a, str>,
         /// The checksum of the crate file being uploaded
-        cksum: &'a str,
+        cksum: Cow<'a, str>,
     },
     /// The user is attempting to yank a crate.
     Yank {
         /// The name of the crate
-        name: &'a str,
+        name: Cow<'a, str>,
         /// The version of the crate
-        vers: &'a str,
+        vers: Cow<'a, str>,
     },
     /// The user is attempting to unyank a crate.
     Unyank {
         /// The name of the crate
-        name: &'a str,
+        name: Cow<'a, str>,
         /// The version of the crate
-        vers: &'a str,
+        vers: Cow<'a, str>,
     },
     /// The user is attempting to modify the owners of a crate.
     Owners {
         /// The name of the crate
-        name: &'a str,
+        name: Cow<'a, str>,
     },
     #[serde(other)]
     Unknown,
@@ -251,7 +251,8 @@ fn doit(
         }
         let request = deserialize_request(&buffer)?;
         let response = stdin_stdout_to_console(|| {
-            credential.perform(&request.registry, &request.action, &request.args)
+            let args = request.args.iter().map(Cow::as_ref).collect::<Vec<_>>();
+            credential.perform(&request.registry, &request.action, &args)
         })?;
 
         serde_json::to_writer(std::io::stdout(), &response)?;
@@ -283,12 +284,12 @@ pub fn read_token(
     registry: &RegistryInfo<'_>,
 ) -> Result<Secret<String>, Error> {
     if let Some(token) = &login_options.token {
-        return Ok(token.to_owned());
+        return Ok(token.as_ref().map(|t| t.trim().to_string()));
     }
 
-    if let Some(url) = login_options.login_url {
+    if let Some(url) = &login_options.login_url {
         eprintln!("please paste the token found on {url} below");
-    } else if let Some(name) = registry.name {
+    } else if let Some(name) = &registry.name {
         eprintln!("please paste the token for {name} below");
     } else {
         eprintln!("please paste the token for {} below", registry.index_url);
@@ -377,11 +378,11 @@ mod tests {
             v: PROTOCOL_VERSION_1,
             args: vec![],
             registry: RegistryInfo {
-                index_url: "url",
+                index_url: "url".into(),
                 name: None,
                 headers: vec![],
             },
-            action: Action::Get(Operation::Owners { name: "pkg" }),
+            action: Action::Get(Operation::Owners { name: "pkg".into() }),
         };
 
         let json = serde_json::to_string(&get_oweners).unwrap();
@@ -401,7 +402,7 @@ mod tests {
             v: PROTOCOL_VERSION_1,
             args: vec![],
             registry: RegistryInfo {
-                index_url: "url",
+                index_url: "url".into(),
                 name: None,
                 headers: vec![],
             },
@@ -416,12 +417,35 @@ mod tests {
     }
 
     #[test]
+    fn credential_request_login() {
+        let unknown = CredentialRequest {
+            v: PROTOCOL_VERSION_1,
+            args: vec![],
+            registry: RegistryInfo {
+                index_url: "url".into(),
+                name: None,
+                headers: vec![],
+            },
+            action: Action::Login(LoginOptions {
+                token: Some(Secret::from(Cow::Borrowed("sec\"ret"))),
+                login_url: Some("login-url".into()),
+            }),
+        };
+
+        let cr: CredentialRequest<'_> = serde_json::from_str(
+            r#"{"v":1,"registry":{"index-url":"url"},"kind":"login","token":"sec\"ret","login-url":"login-url","extra-1":true,"args":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(cr, unknown);
+    }
+
+    #[test]
     fn credential_request_unknown() {
         let unknown = CredentialRequest {
             v: PROTOCOL_VERSION_1,
             args: vec![],
             registry: RegistryInfo {
-                index_url: "",
+                index_url: "".into(),
                 name: None,
                 headers: vec![],
             },

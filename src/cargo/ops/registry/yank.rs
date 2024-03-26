@@ -3,6 +3,8 @@
 //! [yank]: https://doc.rust-lang.org/nightly/cargo/reference/registry-web-api.html#yank
 //! [unyank]: https://doc.rust-lang.org/nightly/cargo/reference/registry-web-api.html#unyank
 
+use std::borrow::Cow;
+
 use anyhow::bail;
 use anyhow::Context as _;
 use cargo_credential::Operation;
@@ -37,13 +39,13 @@ pub fn yank(
 
     let message = if undo {
         Operation::Unyank {
-            name: &name,
-            vers: &version,
+            name: Cow::Borrowed(&name),
+            vers: Cow::Borrowed(&version),
         }
     } else {
         Operation::Yank {
-            name: &name,
-            vers: &version,
+            name: Cow::Borrowed(&name),
+            vers: Cow::Borrowed(&version),
         }
     };
 

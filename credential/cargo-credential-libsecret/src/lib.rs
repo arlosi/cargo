@@ -128,7 +128,7 @@ mod linux {
                     lib.get(b"secret_password_clear_sync\0").map_err(Box::new)?;
             }
 
-            let index_url_c = CString::new(registry.index_url).unwrap();
+            let index_url_c = CString::new(registry.index_url.clone().into_owned()).unwrap();
             match action {
                 cargo_credential::Action::Get(_) => {
                     let mut error: *mut GError = null_mut();
@@ -169,7 +169,7 @@ mod linux {
                     }
                 }
                 cargo_credential::Action::Login(options) => {
-                    let label = label(registry.name.unwrap_or(registry.index_url));
+                    let label = label(registry.name.as_deref().unwrap_or(&registry.index_url));
                     let token = CString::new(read_token(options, registry)?.expose()).unwrap();
                     let mut error: *mut GError = null_mut();
                     let attr_url = CString::new("url").unwrap();

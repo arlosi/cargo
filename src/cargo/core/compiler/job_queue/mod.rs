@@ -140,6 +140,7 @@ use crate::core::compiler::future_incompat::{
 };
 use crate::core::resolver::ResolveBehavior;
 use crate::core::{PackageId, Shell, TargetKind};
+use crate::util::context::WarningHandling;
 use crate::util::diagnostic_server::{self, DiagnosticPrinter};
 use crate::util::errors::AlreadyPrintedError;
 use crate::util::machine_message::{self, Message as _};
@@ -601,6 +602,7 @@ impl<'gctx> DrainState<'gctx> {
         plan: &mut BuildPlan,
         event: Message,
     ) -> Result<(), ErrorToHandle> {
+        let warning_handling = build_runner.bcx.gctx.warning_handling()?;
         match event {
             Message::Run(id, cmd) => {
                 build_runner
@@ -638,7 +640,9 @@ impl<'gctx> DrainState<'gctx> {
                 }
             }
             Message::Warning { id, warning } => {
-                build_runner.bcx.gctx.shell().warn(warning)?;
+                if warning_handling != WarningHandling::Allow {
+                    build_runner.bcx.gctx.shell().warn(warning)?;
+                }
                 self.bump_warning_count(id, true, false);
             }
             Message::WarningCount {
@@ -826,6 +830,9 @@ impl<'gctx> DrainState<'gctx> {
             // `display_error` inside `handle_error`.
             Some(anyhow::Error::new(AlreadyPrintedError::new(error)))
         } else if self.queue.is_empty() && self.pending_queue.is_empty() {
+            build_runner.compilation.warning_count +=
+                self.warning_count.values().map(|c| c.total).sum::<usize>();
+
             let profile_link = build_runner.bcx.gctx.shell().err_hyperlink(
                 "https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles",
             );
@@ -1023,7 +1030,7 @@ impl<'gctx> DrainState<'gctx> {
         id: JobId,
         rustc_workspace_wrapper: &Option<PathBuf>,
     ) {
-        let count = match self.warning_count.remove(&id) {
+        let count = match self.warning_count.get(&id) {
             // An error could add an entry for a `Unit`
             // with 0 warnings but having fixable
             // warnings be disallowed

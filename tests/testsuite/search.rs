@@ -107,7 +107,7 @@ fn not_update() {
     let lock = gctx
         .acquire_package_cache_lock(CacheLockMode::DownloadExclusive)
         .unwrap();
-    let mut regsrc = RegistrySource::remote(sid, &HashSet::new(), &gctx).unwrap();
+    let regsrc = RegistrySource::remote(sid, &HashSet::new(), &gctx).unwrap();
     regsrc.invalidate_cache();
     regsrc.block_until_ready().unwrap();
     drop(lock);

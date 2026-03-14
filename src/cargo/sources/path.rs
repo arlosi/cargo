@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug, Formatter};
 use std::fs;
@@ -37,7 +38,7 @@ pub struct PathSource<'gctx> {
     /// The root path of this source.
     path: PathBuf,
     /// Packages that this sources has discovered.
-    package: Option<Package>,
+    package: RefCell<Option<Package>>,
     gctx: &'gctx GlobalContext,
 }
 
@@ -50,7 +51,7 @@ impl<'gctx> PathSource<'gctx> {
         Self {
             source_id,
             path: path.to_path_buf(),
-            package: None,
+            package: RefCell::new(None),
             gctx,
         }
     }
@@ -63,7 +64,7 @@ impl<'gctx> PathSource<'gctx> {
         Self {
             source_id,
             path,
-            package: Some(pkg),
+            package: RefCell::new(Some(pkg)),
             gctx,
         }
     }
@@ -74,7 +75,7 @@ impl<'gctx> PathSource<'gctx> {
 
         self.load()?;
 
-        match &self.package {
+        match &*self.package.borrow() {
             Some(pkg) => Ok(pkg.clone()),
             None => Err(internal(format!(
                 "no package found in source {:?}",
@@ -100,7 +101,7 @@ impl<'gctx> PathSource<'gctx> {
 
     /// Gets the last modified file in a package.
     fn last_modified_file(&self, pkg: &Package) -> CargoResult<(FileTime, PathBuf)> {
-        if self.package.is_none() {
+        if self.package.borrow().is_none() {
             return Err(internal(format!(
                 "BUG: source `{:?}` was not loaded",
                 self.path
@@ -115,9 +116,10 @@ impl<'gctx> PathSource<'gctx> {
     }
 
     /// Discovers packages inside this source if it hasn't yet done.
-    pub fn load(&mut self) -> CargoResult<()> {
-        if self.package.is_none() {
-            self.package = Some(self.read_package()?);
+    pub fn load(&self) -> CargoResult<()> {
+        let mut package = self.package.borrow_mut();
+        if package.is_none() {
+            *package = Some(self.read_package()?);
         }
 
         Ok(())
@@ -138,13 +140,13 @@ impl<'gctx> Debug for PathSource<'gctx> {
 
 impl<'gctx> Source for PathSource<'gctx> {
     fn query(
-        &mut self,
+        &self,
         dep: &Dependency,
         kind: QueryKind,
         f: &mut dyn FnMut(IndexSummary),
     ) -> Poll<CargoResult<()>> {
         self.load()?;
-        if let Some(s) = self.package.as_ref().map(|p| p.summary()) {
+        if let Some(s) = self.package.borrow().as_ref().map(|p| p.summary()) {
             let matched = match kind {
                 QueryKind::Exact | QueryKind::RejectedVersions => dep.matches(s),
                 QueryKind::AlternativeNames => true,
@@ -169,16 +171,17 @@ impl<'gctx> Source for PathSource<'gctx> {
         self.source_id
     }
 
-    fn download(&mut self, id: PackageId) -> CargoResult<MaybePackage> {
+    fn download(&self, id: PackageId) -> CargoResult<MaybePackage> {
         trace!("getting packages; id={}", id);
         self.load()?;
-        let pkg = self.package.iter().find(|pkg| pkg.package_id() == id);
+        let pkg = self.package.borrow();
+        let pkg = pkg.iter().find(|pkg| pkg.package_id() == id);
         pkg.cloned()
             .map(MaybePackage::Ready)
             .ok_or_else(|| internal(format!("failed to find {} in path source", id)))
     }
 
-    fn finish_download(&mut self, _id: PackageId, _data: Vec<u8>) -> CargoResult<Package> {
+    fn finish_download(&self, _id: PackageId, _data: Vec<u8>) -> CargoResult<Package> {
         panic!("no download should have started")
     }
 
@@ -198,17 +201,17 @@ impl<'gctx> Source for PathSource<'gctx> {
         }
     }
 
-    fn add_to_yanked_whitelist(&mut self, _pkgs: &[PackageId]) {}
+    fn add_to_yanked_whitelist(&self, _pkgs: &[PackageId]) {}
 
-    fn is_yanked(&mut self, _pkg: PackageId) -> Poll<CargoResult<bool>> {
+    fn is_yanked(&self, _pkg: PackageId) -> Poll<CargoResult<bool>> {
         Poll::Ready(Ok(false))
     }
 
-    fn block_until_ready(&mut self) -> CargoResult<()> {
+    fn block_until_ready(&self) -> CargoResult<()> {
         self.load()
     }
 
-    fn invalidate_cache(&mut self) {
+    fn invalidate_cache(&self) {
         // Path source has no local cache.
     }
 
@@ -225,13 +228,13 @@ pub struct RecursivePathSource<'gctx> {
     /// The root path of this source.
     path: PathBuf,
     /// Whether this source has loaded all package information it may contain.
-    loaded: bool,
+    loaded: Cell<bool>,
     /// Packages that this sources has discovered.
     ///
     /// Tracking all packages for a given ID to warn on-demand for unused packages
-    packages: HashMap<PackageId, Vec<Package>>,
+    packages: RefCell<HashMap<PackageId, Vec<Package>>>,
     /// Avoid redundant unused package warnings
-    warned_duplicate: HashSet<PackageId>,
+    warned_duplicate: RefCell<HashSet<PackageId>>,
     gctx: &'gctx GlobalContext,
 }
 
@@ -248,7 +251,7 @@ impl<'gctx> RecursivePathSource<'gctx> {
         Self {
             source_id,
             path: root.to_path_buf(),
-            loaded: false,
+            loaded: Cell::new(false),
             packages: Default::default(),
             warned_duplicate: Default::default(),
             gctx,
@@ -261,6 +264,7 @@ impl<'gctx> RecursivePathSource<'gctx> {
         self.load()?;
         Ok(self
             .packages
+            .borrow()
             .iter()
             .map(|(pkg_id, v)| {
                 first_package(*pkg_id, v, &mut self.warned_duplicate, self.gctx).clone()
@@ -284,7 +288,7 @@ impl<'gctx> RecursivePathSource<'gctx> {
 
     /// Gets the last modified file in a package.
     fn last_modified_file(&self, pkg: &Package) -> CargoResult<(FileTime, PathBuf)> {
-        if !self.loaded {
+        if !self.loaded.get() {
             return Err(internal(format!(
                 "BUG: source `{:?}` was not loaded",
                 self.path
@@ -299,10 +303,11 @@ impl<'gctx> RecursivePathSource<'gctx> {
     }
 
     /// Discovers packages inside this source if it hasn't yet done.
-    pub fn load(&mut self) -> CargoResult<()> {
-        if !self.loaded {
-            self.packages = read_packages(&self.path, self.source_id, self.gctx)?;
-            self.loaded = true;
+    pub fn load(&self) -> CargoResult<()> {
+        if !self.loaded.get() {
+            self.packages
+                .replace(read_packages(&self.path, self.source_id, self.gctx)?);
+            self.loaded.set(true);
         }
 
         Ok(())
@@ -317,7 +322,7 @@ impl<'gctx> Debug for RecursivePathSource<'gctx> {
 
 impl<'gctx> Source for RecursivePathSource<'gctx> {
     fn query(
-        &mut self,
+        &self,
         dep: &Dependency,
         kind: QueryKind,
         f: &mut dyn FnMut(IndexSummary),
@@ -325,11 +330,10 @@ impl<'gctx> Source for RecursivePathSource<'gctx> {
         self.load()?;
         for s in self
             .packages
+            .borrow()
             .iter()
             .filter(|(pkg_id, _)| pkg_id.name() == dep.package_name())
-            .map(|(pkg_id, pkgs)| {
-                first_package(*pkg_id, pkgs, &mut self.warned_duplicate, self.gctx)
-            })
+            .map(|(pkg_id, pkgs)| first_package(*pkg_id, pkgs, &self.warned_duplicate, self.gctx))
             .map(|p| p.summary())
         {
             let matched = match kind {
@@ -356,16 +360,17 @@ impl<'gctx> Source for RecursivePathSource<'gctx> {
         self.source_id
     }
 
-    fn download(&mut self, id: PackageId) -> CargoResult<MaybePackage> {
+    fn download(&self, id: PackageId) -> CargoResult<MaybePackage> {
         trace!("getting packages; id={}", id);
         self.load()?;
-        let pkg = self.packages.get(&id);
-        pkg.map(|pkgs| first_package(id, pkgs, &mut self.warned_duplicate, self.gctx).clone())
+        let pkgs = self.packages.borrow();
+        let pkg = pkgs.get(&id);
+        pkg.map(|pkgs| first_package(id, pkgs, &self.warned_duplicate, self.gctx).clone())
             .map(MaybePackage::Ready)
             .ok_or_else(|| internal(format!("failed to find {} in path source", id)))
     }
 
-    fn finish_download(&mut self, _id: PackageId, _data: Vec<u8>) -> CargoResult<Package> {
+    fn finish_download(&self, _id: PackageId, _data: Vec<u8>) -> CargoResult<Package> {
         panic!("no download should have started")
     }
 
@@ -385,17 +390,17 @@ impl<'gctx> Source for RecursivePathSource<'gctx> {
         }
     }
 
-    fn add_to_yanked_whitelist(&mut self, _pkgs: &[PackageId]) {}
+    fn add_to_yanked_whitelist(&self, _pkgs: &[PackageId]) {}
 
-    fn is_yanked(&mut self, _pkg: PackageId) -> Poll<CargoResult<bool>> {
+    fn is_yanked(&self, _pkg: PackageId) -> Poll<CargoResult<bool>> {
         Poll::Ready(Ok(false))
     }
 
-    fn block_until_ready(&mut self) -> CargoResult<()> {
+    fn block_until_ready(&self) -> CargoResult<()> {
         self.load()
     }
 
-    fn invalidate_cache(&mut self) {
+    fn invalidate_cache(&self) {
         // Path source has no local cache.
     }
 
@@ -517,10 +522,10 @@ impl AsRef<PathBuf> for PathEntry {
 fn first_package<'p>(
     pkg_id: PackageId,
     pkgs: &'p Vec<Package>,
-    warned_duplicate: &mut HashSet<PackageId>,
+    warned_duplicate: &RefCell<HashSet<PackageId>>,
     gctx: &GlobalContext,
 ) -> &'p Package {
-    if pkgs.len() != 1 && warned_duplicate.insert(pkg_id) {
+    if pkgs.len() != 1 && warned_duplicate.borrow_mut().insert(pkg_id) {
         let ignored = pkgs[1..]
             .iter()
             // We can assume a package with publish = false isn't intended to be seen

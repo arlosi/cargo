@@ -138,6 +138,7 @@ impl<'gctx> Debug for PathSource<'gctx> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'gctx> Source for PathSource<'gctx> {
     fn query(
         &self,
@@ -320,6 +321,7 @@ impl<'gctx> Debug for RecursivePathSource<'gctx> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'gctx> Source for RecursivePathSource<'gctx> {
     fn query(
         &self,

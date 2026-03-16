@@ -64,8 +64,8 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, trace};
 
-use crate::core::PackageIdSpec;
-use crate::core::{Dependency, PackageId, Registry, Summary};
+use crate::core::{Dependency, PackageId, Summary};
+use crate::core::{PackageIdSpec, Registry};
 use crate::util::context::GlobalContext;
 use crate::util::errors::CargoResult;
 use crate::util::network::PollExt;
@@ -146,10 +146,8 @@ pub fn resolve(
             gctx,
             &mut past_conflicting_activations,
         )?;
-        if registry.reset_pending() {
+        if registry.wait()? {
             break resolver_ctx;
-        } else {
-            registry.registry.block_until_ready()?;
         }
     };
 
@@ -848,8 +846,8 @@ fn generalize_conflicting(
             // to be conflicting, then we can just say that we conflict with the parent.
             if let Some(others) = registry
                 .query(critical_parents_dep, first_version)
-                .expect("an already used dep now error!?")
                 .expect("an already used dep now pending!?")
+                .expect("an already used dep now error!?")
                 .iter()
                 .rev() // the last one to be tried is the least likely to be in the cache, so start with that.
                 .map(|other| {

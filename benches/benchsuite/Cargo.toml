@@ -8,6 +8,7 @@ description = "Benchmarking suite for Cargo."
 publish = false
 
 [dependencies]
+anyhow.workspace = true
 cargo.workspace = true
 cargo-util.workspace = true
 criterion.workspace = true
@@ -29,6 +30,10 @@ harness = false
 
 [[bench]]
 name = "global_cache_tracker"
+harness = false
+
+[[bench]]
+name = "resolve_core"
 harness = false
 
 [lints]

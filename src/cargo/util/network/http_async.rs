@@ -15,10 +15,10 @@ use anyhow::{Context, bail};
 use curl::MultiError;
 use curl::easy::WriteError;
 use curl::easy::{Easy2, Handler, InfoType, SslOpt, SslVersion};
-use curl::multi::{Easy2Handle, Multi};
+use curl::multi::{Easy2Handle, Multi, MultiWaker};
 
 use futures::channel::oneshot;
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 use crate::util::context::{SslVersionConfig, SslVersionConfigRange};
 use crate::util::network::http::HttpTimeout;
@@ -37,6 +37,7 @@ struct Message {
 pub struct Client {
     channel: Sender<Message>,
     multiplexing: bool,
+    waker: MultiWaker,
 }
 
 impl Client {
@@ -45,10 +46,22 @@ impl Client {
         let (tx, rx) = mpsc::channel();
         let multiplexing = gctx.http_config()?.multiplexing.unwrap_or(true);
 
-        std::thread::spawn(move || WorkerServer::run(rx, multiplexing));
+        // We need a `MultiWaker` from the `Multi`, but `Multi` can't be sent to the worker
+        // thread, so we have to create the waker on the worker thread, then send it back.
+        let waker = {
+            let (waker_tx, waker_rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let multi = Multi::new();
+                waker_tx.send(multi.waker()).unwrap();
+                WorkerServer::run(rx, multiplexing, multi)
+            });
+            waker_rx.recv().unwrap()
+        };
+
         Ok(Client {
             channel: tx,
             multiplexing,
+            waker,
         })
     }
 
@@ -95,10 +108,11 @@ impl Client {
         };
         self.channel
             .send(req)
-            .map_err(|e| crate::util::internal(format!("async http tx channel dead: {e}")))?;
+            .map_err(|_| crate::util::internal("async http tx channel dead"))?;
+        let _ = self.waker.wakeup();
         receiver
             .await
-            .map_err(|e| crate::util::internal(format!("async http rx channel dead: {e}")))?
+            .map_err(|_| crate::util::internal("async http rx channel dead"))?
     }
 }
 
@@ -124,8 +138,10 @@ struct WorkerServer {
 }
 
 impl WorkerServer {
-    fn run(incoming_work: Receiver<Message>, multiplex: bool) {
-        let mut multi = Multi::new();
+    fn run(incoming_work: Receiver<Message>, multiplex: bool, mut multi: Multi) {
+        let waker = multi.waker();
+        waker.wakeup().unwrap();
+
         // let's not flood the server with connections
         if let Err(e) = multi.set_max_host_connections(2) {
             error!("failed to set max host connections in curl: {e}");
@@ -194,6 +210,7 @@ impl WorkerServer {
 
                         let _ = sender.send(result.map(|()| response).map_err(Into::into));
                     });
+                    trace!(target: "network", "{} transfers remaining", running);
 
                     if running > 0 {
                         let timeout = self
@@ -201,11 +218,11 @@ impl WorkerServer {
                             .get_timeout()
                             .ok()
                             .flatten()
-                            .unwrap_or_else(|| Duration::from_secs(1));
-                        if let Err(e) = self.multi.wait(&mut [], timeout) {
-                            self.fail_and_drain(e, "failed to execute `Multi::wait`");
+                            .unwrap_or_else(|| Duration::from_secs(1000));
+                        if let Err(e) = self.multi.poll(&mut [], timeout) {
+                            self.fail_and_drain(e, "failed to execute `Multi::poll`");
                         }
-                    } else if running == 0 {
+                    } else {
                         // Block, waiting for more work
                         match self.incoming_work.recv() {
                             Ok(msg) => self.enqueue_request(msg),
@@ -222,6 +239,7 @@ impl WorkerServer {
         match self.multi.add2(message.easy) {
             Ok(mut handle) => {
                 self.token = self.token.wrapping_add(1);
+                trace!(target: "network", token = self.token, "enqueue req");
                 handle.set_token(self.token).ok();
                 self.handles.insert(self.token, (handle, message.sender));
             }

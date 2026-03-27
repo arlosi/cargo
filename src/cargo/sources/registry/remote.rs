@@ -14,6 +14,7 @@ use crate::util::interning::InternedString;
 use crate::util::{Filesystem, GlobalContext};
 use anyhow::Context as _;
 use cargo_util::paths;
+use cargo_util::registry::make_dep_path;
 use std::cell::{Cell, Ref, RefCell};
 use std::fs::File;
 use std::mem;
@@ -278,53 +279,8 @@ impl<'gctx> RemoteRegistry<'gctx> {
 
         Ok(())
     }
-}
 
-#[async_trait::async_trait(?Send)]
-impl<'gctx> RegistryData for RemoteRegistry<'gctx> {
-    fn prepare(&self) -> CargoResult<()> {
-        self.repo()?;
-        self.gctx
-            .deferred_global_last_use()?
-            .mark_registry_index_used(global_cache_tracker::RegistryIndex {
-                encoded_registry_name: self.name,
-            });
-        Ok(())
-    }
-
-    fn index_path(&self) -> &Filesystem {
-        &self.index_path
-    }
-
-    fn cache_path(&self) -> &Filesystem {
-        &self.cache_path
-    }
-
-    fn assert_index_locked<'a>(&self, path: &'a Filesystem) -> &'a Path {
-        self.gctx
-            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, path)
-    }
-
-    /// Read the general concept for `load()` on [`RegistryData::load`].
-    ///
-    /// `index_version` is a string representing the version of the file used
-    /// to construct the cached copy.
-    ///
-    /// Older versions of Cargo used the single value of the hash of the HEAD
-    /// commit as a `index_version`. This is technically correct but a little
-    /// too conservative. If a new commit is fetched all cached files need to
-    /// be regenerated even if a particular file was not changed.
-    ///
-    /// However if an old cargo has written such a file we still know how to
-    /// read it, as long as we check for that hash value.
-    ///
-    /// Cargo now uses a hash of the file's contents as provided by git.
-    async fn load(
-        &self,
-        _root: &Path,
-        path: &Path,
-        index_version: Option<&str>,
-    ) -> CargoResult<LoadResponse> {
+    fn read(&self, path: &Path, index_version: Option<&str>) -> CargoResult<LoadResponse> {
         if self.needs_update.get() {
             self.update()?;
         }
@@ -388,16 +344,64 @@ impl<'gctx> RegistryData for RemoteRegistry<'gctx> {
             };
         }
     }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<'gctx> RegistryData for RemoteRegistry<'gctx> {
+    fn prepare(&self) -> CargoResult<()> {
+        self.repo()?;
+        self.gctx
+            .deferred_global_last_use()?
+            .mark_registry_index_used(global_cache_tracker::RegistryIndex {
+                encoded_registry_name: self.name,
+            });
+        Ok(())
+    }
+
+    fn index_path(&self) -> &Filesystem {
+        &self.index_path
+    }
+
+    fn cache_path(&self) -> &Filesystem {
+        &self.cache_path
+    }
+
+    fn assert_index_locked<'a>(&self, path: &'a Filesystem) -> &'a Path {
+        self.gctx
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, path)
+    }
+
+    /// Read the general concept for `load()` on [`RegistryData::load`].
+    ///
+    /// `index_version` is a string representing the version of the file used
+    /// to construct the cached copy.
+    ///
+    /// Older versions of Cargo used the single value of the hash of the HEAD
+    /// commit as a `index_version`. This is technically correct but a little
+    /// too conservative. If a new commit is fetched all cached files need to
+    /// be regenerated even if a particular file was not changed.
+    ///
+    /// However if an old cargo has written such a file we still know how to
+    /// read it, as long as we check for that hash value.
+    ///
+    /// Cargo now uses a hash of the file's contents as provided by git.
+    async fn load(
+        &self,
+        _root: &Path,
+        name: &str,
+        index_version: Option<&str>,
+    ) -> CargoResult<LoadResponse> {
+        let path = make_dep_path(&name, false);
+        let path = Path::new(&path);
+        self.read(path, index_version)
+    }
 
     async fn config(&self) -> CargoResult<Option<RegistryConfig>> {
         debug!("loading config");
         self.prepare()?;
         self.gctx
             .assert_package_cache_locked(CacheLockMode::DownloadExclusive, &self.index_path);
-        match self
-            .load(Path::new(""), Path::new(RegistryConfig::NAME), None)
-            .await?
-        {
+        match self.read(Path::new(RegistryConfig::NAME), None)? {
             LoadResponse::Data { raw_data, .. } => {
                 trace!("config loaded");
                 let cfg: RegistryConfig = serde_json::from_slice(&raw_data)?;

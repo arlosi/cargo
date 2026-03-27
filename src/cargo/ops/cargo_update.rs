@@ -670,6 +670,8 @@ fn print_lockfile_updates(
             vec![]
         };
 
+        eprintln!("{possibilities:#?}");
+
         match change.kind {
             PackageChangeKind::Added
             | PackageChangeKind::Upgraded
@@ -800,6 +802,7 @@ fn report_latest(possibilities: &[IndexSummary], change: &PackageChange) -> Opti
     let compat_ver_compat_msrv_summary = possibilities
         .iter()
         .map(|s| s.as_summary())
+        .filter(|s| package_id.version() != s.version() && version_req.matches(s.version()))
         .filter(|s| {
             if let (Some(summary_rust_version), Some(required_rust_version)) =
                 (s.rust_version(), required_rust_version)
@@ -809,7 +812,6 @@ fn report_latest(possibilities: &[IndexSummary], change: &PackageChange) -> Opti
                 true
             }
         })
-        .filter(|s| package_id.version() != s.version() && version_req.matches(s.version()))
         .max_by_key(|s| s.version());
     if let Some(summary) = compat_ver_compat_msrv_summary {
         let warn = style::WARN;
@@ -1026,10 +1028,10 @@ impl PackageChange {
         if !self.package_id.source_id().is_registry() {
             return None;
         }
-
         let query = crate::core::dependency::Dependency::parse(
             self.package_id.name(),
-            None,
+            // None,
+            Some(&self.package_id.version().to_req(Op::GreaterEq).to_string()),
             self.package_id.source_id(),
         )
         .expect("already a valid dependency");

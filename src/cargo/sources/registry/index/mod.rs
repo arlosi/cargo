@@ -27,7 +27,6 @@ use crate::sources::registry::{LoadResponse, RegistryData};
 use crate::util::IntoUrl;
 use crate::util::interning::InternedString;
 use crate::util::{CargoResult, Filesystem, GlobalContext, OptVersionReq, internal};
-use cargo_util::registry::make_dep_path;
 use cargo_util_schemas::index::{IndexPackage, RegistryDependency};
 use cargo_util_schemas::manifest::RustVersion;
 use futures::channel::oneshot;
@@ -43,7 +42,7 @@ use std::str;
 use tracing::info;
 
 mod cache;
-use self::cache::CacheManager;
+pub use self::cache::CacheManager;
 use self::cache::SummariesCache;
 
 /// The maximum schema version of the `v` field in the index this version of
@@ -290,15 +289,12 @@ impl<'gctx> RegistryIndex<'gctx> {
     ///
     /// Internally there's quite a few layer of caching to amortize this cost
     /// though since this method is called quite a lot on null builds in Cargo.
-    async fn summaries<'a, 'b>(
+    async fn summaries<'a>(
         &'a self,
         name: InternedString,
-        req: &'b OptVersionReq,
+        req: &'a OptVersionReq,
         load: &dyn RegistryData,
-    ) -> CargoResult<impl Iterator<Item = IndexSummary> + 'b>
-    where
-        'a: 'b,
-    {
+    ) -> CargoResult<impl Iterator<Item = IndexSummary>> {
         // First up parse what summaries we have available.
         let summaries = self.load_summaries(name, load).await?;
 
@@ -316,13 +312,14 @@ impl<'gctx> RegistryIndex<'gctx> {
             summaries: Rc<Summaries>,
             i: usize,
         }
-
+        // if matches!(req, OptVersionReq::Any) {panic!("X");}
         impl<'a> Iterator for I<'a> {
             type Item = IndexSummary;
 
             fn next(&mut self) -> Option<Self::Item> {
                 while let Some((v, summary)) = self.summaries.versions.get(self.i) {
                     self.i += 1;
+                    // eprintln!("{} {:?} {}", v, self.req, self.req.matches(v));
                     if self.req.matches(v) {
                         match summary.borrow_mut().parse(
                             &self.summaries.raw_data,
@@ -547,7 +544,7 @@ impl Summaries {
         // This is the file we're loading from cache or the index data.
         // See module comment in `registry/mod.rs` for why this is structured the way it is.
         let lowered_name = &name.to_lowercase();
-        let relative = make_dep_path(&lowered_name, false);
+        let relative = lowered_name;
 
         let mut cached_summaries = None;
         let mut index_version = None;

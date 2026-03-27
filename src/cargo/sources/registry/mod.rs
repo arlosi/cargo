@@ -317,6 +317,14 @@ pub struct RegistryConfig {
     /// [RFC 3139]: https://rust-lang.github.io/rfcs/3139-cargo-alternative-registry-auth.html
     #[serde(default)]
     pub auth_required: bool,
+
+    /// Root hash of the merkle tree.
+    pub merkle: Option<MerkleConfig>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct MerkleConfig {
+    root: String,
 }
 
 /// Result from loading data from a registry.
@@ -364,13 +372,13 @@ pub trait RegistryData {
     /// Loads the JSON for a specific named package from the index.
     ///
     /// * `root` is the root path to the index.
-    /// * `path` is the relative path to the package to load (like `ca/rg/cargo`).
+    /// * `name` is the name of the package to load (like `cargo`) in all lowercase.
     /// * `index_version` is the version of the requested crate data currently
     ///    in cache. This is useful for checking if a local cache is outdated.
     async fn load(
         &self,
         root: &Path,
-        path: &Path,
+        name: &str,
         index_version: Option<&str>,
     ) -> CargoResult<LoadResponse>;
 

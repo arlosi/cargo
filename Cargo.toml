@@ -236,6 +236,7 @@ unicode-ident.workspace = true
 url.workspace = true
 walkdir.workspace = true
 winnow.workspace = true
+merkletree = { path = "../merkle-experiments/merkletree"}
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

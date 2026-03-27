@@ -5,9 +5,11 @@ use crate::core::SourceId;
 use crate::core::global_cache_tracker;
 use crate::sources::registry::LoadResponse;
 use crate::sources::registry::MaybeLock;
+use crate::sources::registry::MerkleConfig;
 use crate::sources::registry::RegistryConfig;
 use crate::sources::registry::RegistryData;
 use crate::sources::registry::download;
+use crate::sources::registry::index::CacheManager;
 use crate::util::Filesystem;
 use crate::util::GlobalContext;
 use crate::util::IntoUrl;
@@ -23,10 +25,14 @@ use crate::util::network::retry::RetryResult;
 use anyhow::Context as _;
 use cargo_credential::Operation;
 use cargo_util::paths;
+use cargo_util::registry::make_dep_path;
 use futures::lock::Mutex;
 use http::HeaderName;
 use http::HeaderValue;
 use http::Response;
+use merkletree::ContentHash;
+use merkletree::RoMerkleStore;
+use merkletree::TreeReader;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -72,7 +78,7 @@ pub struct HttpRegistry<'gctx> {
     registry_config: Mutex<Option<RegistryConfig>>,
 
     /// Backend used for making network requests.
-    inner: HttpBackend<'gctx>,
+    merkle: RoMerkleStore<HttpBackend<'gctx>>,
 }
 
 impl<'gctx> HttpRegistry<'gctx> {
@@ -88,12 +94,12 @@ impl<'gctx> HttpRegistry<'gctx> {
         Ok(HttpRegistry {
             name: name.into(),
             registry_config: Mutex::new(None),
-            inner: HttpBackend::new(source_id, gctx, name)?,
+            merkle: RoMerkleStore::new(HttpBackend::new(source_id, gctx, name)?, 10),
         })
     }
 
     fn inner(&self) -> &HttpBackend<'gctx> {
-        &self.inner
+        &self.merkle.backend()
     }
 
     /// Get the registry configuration from either cache or remote.
@@ -197,15 +203,16 @@ impl<'gctx> HttpRegistry<'gctx> {
 
     async fn sparse_fetch(
         &self,
-        path: &str,
+        name: &str,
         index_version: Option<&str>,
     ) -> CargoResult<LoadResponse> {
+        let path = make_dep_path(&name, false);
         if let Some(index_version) = index_version {
             trace!("local cache of {path} is available at version `{index_version}`",);
             if self.inner().is_fresh(&path) {
                 return Ok(LoadResponse::CacheValid);
             }
-        } else if self.inner().fresh.borrow().contains(path) {
+        } else if self.inner().fresh.borrow().contains(&path) {
             // We have no cached copy of this file, and we already downloaded it.
             debug!("cache did not contain previously downloaded file {path}",);
             return Ok(LoadResponse::NotFound);
@@ -231,6 +238,56 @@ impl<'gctx> HttpRegistry<'gctx> {
                 });
         let index_version = index_version.as_ref().map(|(k, v)| (k, v));
         self.inner().fetch_uncached(&path, index_version).await
+    }
+
+    async fn merkle_fetch(
+        &self,
+        name: &str,
+        index_version: Option<&str>,
+        merkle_config: &MerkleConfig,
+    ) -> CargoResult<LoadResponse> {
+        // Configure the tree parameters
+        if !self.merkle.has_root().await {
+            let root = merkle_config
+                .root
+                .as_str()
+                .try_into()
+                .with_context(|| format!("{}", merkle_config.root))?;
+            self.merkle.set_root(root).await;
+        }
+
+        // Fetch the file
+        let response = async {
+            if let Some(hash) = self.merkle.get_file_hash(name).await? {
+                if index_version == Some(&hash.to_string()) {
+                    Ok(LoadResponse::CacheValid)
+                } else {
+                    let raw_data = self.merkle.get_file_by_hash(&hash).await?;
+                    Ok(LoadResponse::Data {
+                        raw_data,
+                        index_version: Some(hash.to_string()),
+                    })
+                }
+            } else {
+                Ok(LoadResponse::NotFound)
+            }
+        }
+        .await;
+
+        match response {
+            Ok(ok) => Ok(ok),
+            // Rewrite NotFound errors into LoadResponse::NotFound if we're in offline mode.
+            // In normal online operation, these errors would indicate the server is misbehaving
+            // by not returning files that are known to exist. But in offline mode, we just don't
+            // have them cached.
+            Err(merkletree::Error::NotFound { .. }) if self.inner().offline() => {
+                Ok(LoadResponse::NotFound)
+            }
+            // The backend error type is anyhow::Error, so we can pass it through.
+            Err(merkletree::Error::Backend(e)) => Err(e),
+            // Convert any other errors to anyhow.
+            Err(e) => Err(anyhow::anyhow!(e)),
+        }
     }
 }
 
@@ -267,10 +324,9 @@ impl<'gctx> RegistryData for HttpRegistry<'gctx> {
     async fn load(
         &self,
         _root: &Path,
-        path: &Path,
+        name: &str,
         index_version: Option<&str>,
     ) -> CargoResult<LoadResponse> {
-        // Ensure the config is loaded.
         let Some(config) = self.config_opt().await? else {
             return Ok(LoadResponse::NotFound);
         };
@@ -278,10 +334,14 @@ impl<'gctx> RegistryData for HttpRegistry<'gctx> {
             .auth_required
             .update(|v| v || config.auth_required);
 
-        let path = path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("non UTF8 path: {}", path.display()))?;
-        self.sparse_fetch(path, index_version).await
+        if let Some(merkle) = &config.merkle {
+            self.merkle_fetch(name, index_version, merkle).await
+            // Now it's possible that this will have returned
+            // JUST the VERSION DATA, which will require
+            // ANOTHER merkle fetch REQ based on HASH KEY
+        } else {
+            self.sparse_fetch(name, index_version).await
+        }
     }
 
     async fn config(&self) -> CargoResult<Option<RegistryConfig>> {
@@ -341,6 +401,9 @@ struct HttpBackend<'gctx> {
 
     /// Path to the cache of `.crate` files (`$CARGO_HOME/registry/cache/$REG-HASH`).
     crate_cache_path: Filesystem,
+
+    /// Merkle tree cache.
+    index_cache: CacheManager<'gctx>,
 
     /// The unique identifier of this registry source.
     source_id: SourceId,
@@ -403,6 +466,7 @@ impl<'gctx> HttpBackend<'gctx> {
         Ok(HttpBackend {
             index_cache_path: index_cache_path.clone(),
             crate_cache_path: gctx.registry_cache_path().join(name),
+            index_cache: CacheManager::new(index_cache_path, gctx),
             source_id,
             gctx,
             url,
@@ -641,5 +705,41 @@ impl<'gctx> HttpBackend<'gctx> {
             progress.print_now(&format!("{complete} complete; {pending} pending"))?;
         }
         Ok(())
+    }
+}
+
+impl TreeReader for HttpBackend<'_> {
+    type Error = anyhow::Error;
+
+    async fn read(
+        &self,
+        hash: &ContentHash,
+        is_data: bool,
+    ) -> Result<Option<Vec<u8>>, Self::Error> {
+        let hash = hash.to_string();
+        if !is_data && let Some(raw_data) = self.index_cache.get(&hash) {
+            return Ok(Some(raw_data));
+        }
+
+        let path = if is_data {
+            &format!("merkle/data/{hash}")
+        } else {
+            &format!("merkle/tree/{hash}")
+        };
+
+        let response = match self.fetch_uncached(&path, None).await? {
+            LoadResponse::CacheValid => unreachable!(),
+            LoadResponse::NotFound => None,
+            LoadResponse::Data {
+                raw_data,
+                index_version: _,
+            } => Some(raw_data),
+        };
+
+        if !is_data && let Some(raw_data) = &response {
+            self.index_cache.put(&hash, raw_data);
+        }
+
+        Ok(response)
     }
 }

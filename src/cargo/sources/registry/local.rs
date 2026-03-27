@@ -4,6 +4,7 @@ use crate::core::PackageId;
 use crate::sources::registry::{LoadResponse, MaybeLock, RegistryConfig, RegistryData};
 use crate::util::errors::CargoResult;
 use crate::util::{Filesystem, GlobalContext};
+use cargo_util::registry::make_dep_path;
 use cargo_util::{Sha256, paths};
 use std::cell::Cell;
 use std::fs::File;
@@ -131,9 +132,10 @@ impl<'gctx> RegistryData for LocalRegistry<'gctx> {
     async fn load(
         &self,
         root: &Path,
-        path: &Path,
+        name: &str,
         _index_version: Option<&str>,
     ) -> CargoResult<LoadResponse> {
+        let path = make_dep_path(&name, false);
         if !self.updated.get() {
             self.update()?;
         }

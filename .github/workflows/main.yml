@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - "**"
+  workflow_dispatch:
 
 defaults:
   run:
@@ -11,10 +12,6 @@ defaults:
 
 permissions:
   contents: read
-
-concurrency:
-  group: "${{ github.workflow }}-${{ github.ref }}"
-  cancel-in-progress: true
 
 env:
   MDBOOK_VERSION: 0.5.1

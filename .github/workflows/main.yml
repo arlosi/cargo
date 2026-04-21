@@ -214,6 +214,15 @@ jobs:
     - run: cargo test -p cargo
     - name: Clear intermediate test output
       run: ci/clean-test-output.sh
+    - run: cargo test -p cargo
+    - name: Clear intermediate test output
+      run: ci/clean-test-output.sh
+    - run: cargo test -p cargo
+    - name: Clear intermediate test output
+      run: ci/clean-test-output.sh
+    - run: cargo test -p cargo
+    - name: Clear intermediate test output
+      run: ci/clean-test-output.sh
 
     - name: gitoxide tests (all git-related tests)
       run: cargo test -p cargo git
